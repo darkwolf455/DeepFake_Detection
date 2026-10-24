@@ -1,0 +1,49 @@
+# Image Branch Configuration: CLIP ViT-L/14 with Trainable Head and LoRA option
+model:
+  name: "openai/clip-vit-large-patch14"
+  pretrained: true
+  freeze_backbone: true
+  head_type: "mlp"          # "linear" or "mlp"
+  hidden_dim: 512
+  dropout: 0.2
+  use_lora: false           # Set true to enable PEFT LoRA fine-tuning
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1
+  lora_target_modules: ["q_proj", "v_proj"]
+
+data:
+  train_split_csv: "data/splits/image_train.csv"
+  val_split_csv: "data/splits/image_val.csv"
+  test_split_csv: "data/splits/image_test.csv"
+  image_size: 224
+  num_workers: 4            # Fallback to 0 automatically on Windows
+  batch_size: 32            # Fits 8-12GB GPU VRAM
+  val_batch_size: 64
+  class_balanced_sampling: true
+
+augmentation:
+  jpeg_compression_min: 30
+  jpeg_compression_max: 100
+  gaussian_blur_prob: 0.3
+  blur_kernel_limit: [3, 7]
+  resize_scale_limit: [0.75, 1.25]
+  horizontal_flip_prob: 0.5
+  color_jitter_prob: 0.3
+  random_crop_prob: 0.4
+
+training:
+  seed: 42
+  epochs: 15
+  lr: 0.0001
+  weight_decay: 0.01
+  warmup_epochs: 2
+  label_smoothing: 0.05
+  gradient_accumulation_steps: 2
+  use_amp: true             # Automatic Mixed Precision
+  early_stopping_patience: 4
+  monitor_metric: "val_auc"
+  mode: "max"
+  checkpoint_dir: "checkpoints"
+  checkpoint_name: "image_best.pt"
+  log_interval: 20

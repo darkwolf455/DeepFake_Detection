@@ -1,0 +1,47 @@
+# Audio Branch Configuration: Pretrained Wav2Vec2 / WavLM + Attentive Pooling
+model:
+  backbone_name: "facebook/wav2vec2-xls-r-300m"  # or "microsoft/wavlm-large"
+  sample_rate: 16000
+  freeze_feature_extractor: true
+  unfreeze_last_n_layers: 2                      # Fine-tune only top 2 transformer layers
+  aggregate_hidden_states: true                 # Learnable weighted sum of all layer outputs
+  classifier_type: "attentive_pooling"          # "attentive_pooling" or "aasist"
+  hidden_dim: 256
+  dropout: 0.15
+
+audio_processing:
+  target_sample_rate: 16000
+  crop_duration_seconds: 4.0                    # 4.0s = 64,000 samples @ 16kHz
+  inference_window_seconds: 4.0
+  inference_hop_seconds: 1.0                    # 1s hop for smooth per-second timeline
+  normalize_rms: true
+
+augmentation:
+  use_rawboost: true                            # Linear & non-linear convolutive noise
+  additive_noise_prob: 0.4
+  snr_db_range: [10, 30]
+  codec_simulation_prob: 0.4                    # MP3/AAC/Opus lossy degradation
+  gain_range_db: [-6, 6]
+  speed_perturbation_prob: 0.2
+
+data:
+  train_split_csv: "data/splits/audio_train.csv"
+  val_split_csv: "data/splits/audio_val.csv"
+  test_split_csv: "data/splits/audio_test.csv"
+  num_workers: 2
+  batch_size: 16                                # 16 waveforms of 4s fits in 8GB VRAM
+  val_batch_size: 32
+
+training:
+  seed: 42
+  epochs: 18
+  lr: 0.00005
+  weight_decay: 0.001
+  loss_type: "focal"                            # "focal" or "cross_entropy"
+  focal_gamma: 2.0
+  use_amp: true
+  early_stopping_patience: 4
+  monitor_metric: "val_eer"                     # Equal Error Rate (lower is better)
+  mode: "min"
+  checkpoint_dir: "checkpoints"
+  checkpoint_name: "audio_best.pt"

@@ -1,0 +1,40 @@
+name: verisense
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch=2.2.1
+  - torchvision=0.17.1
+  - torchaudio=2.2.1
+  - pytorch-cuda=12.1
+  - ffmpeg
+  - libsndfile
+  - pip:
+      - transformers>=4.38.0
+      - open_clip_torch>=2.24.0
+      - peft>=0.9.0
+      - opencv-python-headless>=4.9.0
+      - mediapipe>=0.10.11
+      - albumentations>=1.4.0
+      - pillow>=10.2.0
+      - librosa>=0.10.1
+      - soundfile>=0.12.1
+      - scipy>=1.12.0
+      - numpy>=1.24.0,<2.0.0
+      - pandas>=2.2.0
+      - scikit-learn>=1.4.0
+      - tqdm>=4.66.0
+      - pyyaml>=6.0.1
+      - tensorboard>=2.16.0
+      - fastapi>=0.110.0
+      - uvicorn[standard]>=0.28.0
+      - pydantic>=2.6.0
+      - pydantic-settings>=2.2.0
+      - python-multipart>=0.0.9
+      - filetype>=1.2.0
+      - pytest>=8.0.0
+      - httpx>=0.27.0

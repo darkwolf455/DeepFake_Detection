@@ -1,0 +1,31 @@
+# Multimodal Late Fusion & Calibration Configuration
+fusion:
+  model_type: "mlp"         # "logistic_regression" or "mlp"
+  hidden_dim: 32
+  dropout: 0.1
+  modalities: ["image", "video", "audio", "av_sync"]
+  handle_missing: "mask"    # "mask", "impute_prior", or "zero"
+
+syncnet:
+  pretrained_weights: "checkpoints/syncnet.pt"
+  mouth_crop_size: 112
+  audio_feature_type: "mfcc"
+  sync_window_frames: 5     # 0.2s @ 25fps
+
+calibration:
+  method: "temperature"     # "temperature" (Platt scaling) or "isotonic"
+  inconclusive_lower: 0.40  # Scores between 0.40 and 0.65 are flagged as "inconclusive"
+  inconclusive_upper: 0.65
+
+data:
+  features_csv: "data/processed/multimodal_features.csv"
+  train_split_csv: "data/splits/fusion_train.csv"
+  val_split_csv: "data/splits/fusion_val.csv"
+  test_split_csv: "data/splits/fusion_test.csv"
+
+training:
+  epochs: 50
+  lr: 0.005
+  weight_decay: 0.0001
+  checkpoint_dir: "checkpoints"
+  checkpoint_name: "fusion_calibrated.pt"

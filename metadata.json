@@ -1,0 +1,6 @@
+{
+  "name": "VeriSense - Multimodal Deepfake Detection",
+  "description": "Production multimodal deepfake detection system for images, videos, and audio with CLIP, temporal transformers, Wav2Vec2/WavLM, calibrated late fusion, and Grad-CAM explainability.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

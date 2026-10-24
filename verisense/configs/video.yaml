@@ -1,0 +1,47 @@
+# Video Branch Configuration: Face Extractor + Frame Encoder + Temporal Model
+face_extractor:
+  backend: "mediapipe"      # "mediapipe" or "opencv"
+  confidence_threshold: 0.65
+  margin_ratio: 0.25        # 25% margin around detected face box
+  target_face_size: 224
+  multi_face_strategy: "max" # "max" or "all"
+  missing_face_flag: true
+
+feature_extractor:
+  backbone: "clip_vit_l14"  # "clip_vit_l14" (dim 768) or "efficientnet_b4" (dim 1792)
+  embedding_dim: 768
+  cache_dir: "data/processed/video_cache"
+  use_disk_cache: true
+
+temporal_model:
+  type: "transformer"       # "transformer" or "bilstm"
+  input_dim: 768
+  d_model: 512
+  nhead: 8
+  num_layers: 4
+  dim_feedforward: 1024
+  dropout: 0.2
+  max_frames: 32            # Number of frames sampled per video clip
+  pooling: "attention"      # "mean" or "attention"
+
+data:
+  train_split_csv: "data/splits/video_train.csv"
+  val_split_csv: "data/splits/video_val.csv"
+  test_split_csv: "data/splits/video_test.csv"
+  num_workers: 2
+  batch_size: 16            # Fits comfortably in 8GB VRAM with cached embeddings
+  val_batch_size: 32
+
+training:
+  seed: 42
+  epochs: 20
+  lr: 0.0002
+  weight_decay: 0.005
+  warmup_epochs: 2
+  gradient_accumulation_steps: 1
+  use_amp: true
+  early_stopping_patience: 5
+  monitor_metric: "val_auc"
+  mode: "max"
+  checkpoint_dir: "checkpoints"
+  checkpoint_name: "video_best.pt"

@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  verisense-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: verisense-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - VERISENSE_HOST=0.0.0.0
+      - VERISENSE_PORT=8000
+      - VERISENSE_MAX_CONCURRENT_INFERENCES=2
+    volumes:
+      - ./checkpoints:/app/checkpoints:ro
+      - ./heatmaps_cache:/app/backend/heatmaps_cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
