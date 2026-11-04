@@ -90,12 +90,12 @@ class EarlyStopping:
         if improved:
             self.best_score = current_score
             self.counter = 0
-            return True
         else:
             self.counter += 1
             if self.counter >= self.patience:
                 self.early_stop = True
-            return False
+
+        return self.early_stop
 
 
 def save_checkpoint(

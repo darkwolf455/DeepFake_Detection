@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Audit reports
+AUDIT_REPORT*
+audit_reports/
+
