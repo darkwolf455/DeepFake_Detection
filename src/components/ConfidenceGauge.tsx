@@ -1,9 +1,10 @@
+
 import React from 'react';
 import { motion } from 'motion/react';
 import { Verdict } from '../types';
 
 interface ConfidenceGaugeProps {
-  confidence: number; // 0 to 1
+  confidence: number;
   verdict: Verdict;
   size?: number;
 }
@@ -13,105 +14,170 @@ export const ConfidenceGauge: React.FC<ConfidenceGaugeProps> = ({
   verdict,
   size = 200,
 }) => {
-  const percentage = Math.round(confidence * 100);
-  const strokeWidth = 14;
+  const percentage = Math.max(0, Math.min(100, Math.round(confidence * 100)));
+
+  const strokeWidth = 12;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference - (percentage / 100) * circumference;
 
-  let colorGradient = {
-    start: '#10B981', // Emerald
-    end: '#059669',
-    glow: 'rgba(16, 185, 129, 0.3)',
-    text: 'text-emerald-400',
-    border: 'border-emerald-500/30',
-    bg: 'bg-emerald-500/10',
-    badgeText: 'Authentic Signature',
+  const strokeDashoffset =
+    circumference - (percentage / 100) * circumference;
+
+  const config = {
+    authentic: {
+      color: '#10B981',
+      glow: 'rgba(16,185,129,0.25)',
+      label: 'Authentic Signature',
+      status: 'AUTHENTIC',
+    },
+    manipulated: {
+      color: '#F43F5E',
+      glow: 'rgba(244,63,94,0.25)',
+      label: 'Deepfake Anomalies Detected',
+      status: 'MANIPULATED',
+    },
+    inconclusive: {
+      color: '#F59E0B',
+      glow: 'rgba(245,158,11,0.25)',
+      label: 'Uncertain Forensic Margin',
+      status: 'INCONCLUSIVE',
+    },
   };
 
-  if (verdict === 'manipulated') {
-    colorGradient = {
-      start: '#EF4444', // Red
-      end: '#DC2626',
-      glow: 'rgba(239, 68, 68, 0.3)',
-      text: 'text-rose-400',
-      border: 'border-rose-500/30',
-      bg: 'bg-rose-500/10',
-      badgeText: 'Deepfake Anomalies Detected',
-    };
-  } else if (verdict === 'inconclusive') {
-    colorGradient = {
-      start: '#F59E0B', // Amber
-      end: '#D97706',
-      glow: 'rgba(245, 158, 11, 0.3)',
-      text: 'text-amber-400',
-      border: 'border-amber-500/30',
-      bg: 'bg-amber-500/10',
-      badgeText: 'Uncertain Forensic Margin',
-    };
-  }
+  const current =
+    config[verdict] ?? config.inconclusive;
 
   return (
-    <div className="flex flex-col items-center justify-center p-4">
-      <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
-        <svg width={size} height={size} className="transform -rotate-90">
-          {/* Background circle */}
+    <div
+      className="w-full h-full flex flex-col items-center justify-center rounded-2xl p-5"
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+      }}
+    >
+      {/* HEADER */}
+      <div className="w-full flex items-center justify-between mb-5">
+        <div>
+          <p
+            className="text-[10px] font-bold tracking-[0.16em] uppercase"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            Forensic Analysis
+          </p>
+
+          <h3
+            className="text-sm font-bold mt-1"
+            style={{ color: 'var(--text-primary)' }}
+          >
+            Confidence Score
+          </h3>
+        </div>
+
+        <span
+          className="w-2 h-2 rounded-full animate-pulse"
+          style={{ background: current.color }}
+        />
+      </div>
+
+      {/* GAUGE */}
+      <div
+        className="relative flex items-center justify-center"
+        style={{ width: size, height: size }}
+      >
+        <svg
+          width={size}
+          height={size}
+          viewBox={`0 0 ${size} ${size}`}
+          className="-rotate-90 overflow-visible"
+        >
+          <defs>
+            <filter id="verisense-gauge-glow">
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+
           <circle
             cx={size / 2}
             cy={size / 2}
             r={radius}
-            stroke="currentColor"
+            stroke="var(--border)"
             strokeWidth={strokeWidth}
-            className="text-slate-800"
-            fill="transparent"
+            fill="none"
           />
 
-          <defs>
-            <linearGradient id={`gauge-grad-${verdict}`} x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor={colorGradient.start} />
-              <stop offset="100%" stopColor={colorGradient.end} />
-            </linearGradient>
-            <filter id="gauge-glow" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="0" stdDeviation="4" floodColor={colorGradient.start} floodOpacity="0.4" />
-            </filter>
-          </defs>
-
-          {/* Foreground animated meter */}
           <motion.circle
             cx={size / 2}
             cy={size / 2}
             r={radius}
-            stroke={`url(#gauge-grad-${verdict})`}
+            stroke={current.color}
             strokeWidth={strokeWidth}
             strokeDasharray={circumference}
             strokeLinecap="round"
-            fill="transparent"
-            filter="url(#gauge-glow)"
+            fill="none"
+            filter="url(#verisense-gauge-glow)"
             initial={{ strokeDashoffset: circumference }}
             animate={{ strokeDashoffset }}
-            transition={{ duration: 1.2, ease: 'easeOut' }}
+            transition={{ duration: 1.4, ease: 'easeOut' }}
           />
         </svg>
 
-        {/* Center label */}
-        <div className="absolute flex flex-col items-center justify-center text-center">
+        {/* CENTER TEXT */}
+        <div className="absolute flex flex-col items-center">
           <motion.span
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.6, delay: 0.2 }}
-            className={`text-4xl font-extrabold font-mono tracking-tight ${colorGradient.text}`}
+            className="text-[42px] font-extrabold tracking-tight font-mono"
+            style={{
+              color: current.color,
+              textShadow: `0 0 24px ${current.glow}`,
+            }}
           >
             {percentage}%
           </motion.span>
-          <span className="text-[11px] font-medium text-slate-400 uppercase tracking-widest mt-1">
+
+          <span
+            className="text-[10px] uppercase tracking-[0.18em] font-bold mt-1"
+            style={{ color: 'var(--text-muted)' }}
+          >
             Confidence
           </span>
         </div>
       </div>
 
-      <div className={`mt-3 px-3 py-1 rounded-full text-xs font-semibold ${colorGradient.bg} ${colorGradient.border} border ${colorGradient.text}`}>
-        {colorGradient.badgeText}
+      {/* VERDICT */}
+      <div
+        className="mt-5 w-full text-center py-3 px-3 rounded-xl border"
+        style={{
+          background: `${current.color}12`,
+          borderColor: `${current.color}45`,
+        }}
+      >
+        <p
+          className="text-[10px] font-extrabold tracking-[0.15em]"
+          style={{ color: current.color }}
+        >
+          {current.status}
+        </p>
+
+        <p
+          className="text-[11px] mt-1"
+          style={{ color: 'var(--text-secondary)' }}
+        >
+          {current.label}
+        </p>
       </div>
+
+      <p
+        className="text-[10px] mt-3 text-center leading-relaxed"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        Model-estimated confidence. Not a probability of factual authenticity.
+      </p>
     </div>
   );
 };

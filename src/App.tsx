@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { HistoryProvider, useHistory } from './context/HistoryContext';
@@ -12,7 +13,6 @@ import { CodeExplorerPage } from './pages/CodeExplorerPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AnalyzeResponse } from './types';
 
-// Error Boundary component
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean; error: Error | null }
@@ -26,32 +26,40 @@ class ErrorBoundary extends React.Component<
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: any) {
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error('ErrorBoundary caught an error:', error, errorInfo);
   }
 
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen bg-[#0B0F19] text-slate-100 flex flex-col items-center justify-center p-6 text-center">
-          <div className="max-w-md p-8 rounded-3xl bg-slate-900 border border-rose-500/30 space-y-4">
-            <h2 className="text-xl font-bold text-rose-400">Something went wrong</h2>
-            <p className="text-xs text-slate-400 font-mono">
-              {this.state.error?.message || 'An unexpected rendering error occurred.'}
+        <div className="flex min-h-screen items-center justify-center bg-[var(--bg)] p-6 text-[var(--text)]">
+          <div className="w-full max-w-md rounded-2xl border border-[var(--danger)]/30 bg-[var(--surface)] p-8 shadow-xl">
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--danger-soft)] text-[var(--danger)]">
+              <span className="text-2xl font-bold">!</span>
+            </div>
+
+            <h2 className="text-xl font-bold">Something went wrong</h2>
+
+            <p className="mt-2 break-words font-mono text-xs leading-6 text-[var(--text-secondary)]">
+              {this.state.error?.message ||
+                'An unexpected rendering error occurred.'}
             </p>
+
             <button
               onClick={() => {
                 this.setState({ hasError: false, error: null });
                 window.location.reload();
               }}
-              className="px-4 py-2 rounded-xl text-xs font-semibold bg-cyan-500 text-slate-950 font-bold hover:bg-cyan-400 transition-colors"
+              className="mt-6 rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-bold text-white transition hover:opacity-90"
             >
-              Reload Application
+              Reload application
             </button>
           </div>
         </div>
       );
     }
+
     return this.props.children;
   }
 }
@@ -62,7 +70,6 @@ function MainApp() {
   const [activeFile, setActiveFile] = useState<File | null>(null);
   const [activePreviewUrl, setActivePreviewUrl] = useState<string | null>(null);
 
-  // Settings
   const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
   const [inconclusiveLower, setInconclusiveLower] = useState<number>(0.40);
   const [inconclusiveUpper, setInconclusiveUpper] = useState<number>(0.65);
@@ -78,14 +85,16 @@ function MainApp() {
     setActiveFile(file);
     setActivePreviewUrl(previewUrl);
 
-    // Save record to local history
     addHistoryItem({
       id: result.id,
       filename: file.name,
       modality: result.modality,
       verdict: result.verdict,
       confidence: result.confidence,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
       scores: result.scores,
       file_sha256: result.file_sha256,
     });
@@ -96,65 +105,120 @@ function MainApp() {
   const handleReset = () => {
     setActiveResult(null);
     setActiveFile(null);
+
     if (activePreviewUrl) {
       URL.revokeObjectURL(activePreviewUrl);
       setActivePreviewUrl(null);
     }
+
     setActiveTab('analyze');
   };
 
-  return (
-    <div className="min-h-screen flex flex-col bg-[#0B0F19] text-slate-100 font-sans selection:bg-cyan-500/30 selection:text-cyan-200">
-      {/* Persistent Forensics Notice Banner */}
-      <DisclaimerBanner />
+  const pageTitles: Record<string, string> = {
+    analyze: 'Analyze media',
+    results: 'Analysis results',
+    history: 'Investigation history',
+    methodology: 'Detection methodology',
+    code: 'Code explorer',
+    settings: 'System settings',
+  };
 
-      {/* Navigation Bar */}
+  return (
+    <div className="flex min-h-screen bg-[var(--bg)] font-sans text-[var(--text)] selection:bg-[var(--accent)]/20">
+      {/* Persistent desktop sidebar + mobile navigation */}
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         hasActiveResult={!!activeResult}
       />
 
-      {/* Main Page Content */}
-      <main className="flex-1 w-full">
-        {activeTab === 'analyze' && (
-          <AnalyzePage
-            onAnalysisComplete={handleAnalysisComplete}
-            apiBaseUrl={apiBaseUrl}
-          />
-        )}
+      {/* Main application area */}
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col lg:ml-[264px]">
+        <DisclaimerBanner />
 
-        {activeTab === 'results' && activeResult && activeFile && activePreviewUrl && (
-          <ResultsPage
-            result={activeResult}
-            originalFile={activeFile}
-            previewUrl={activePreviewUrl}
-            onReset={handleReset}
-          />
-        )}
+        {/* Workspace topbar */}
+        <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--surface)]/90 backdrop-blur-xl">
+          <div className="flex min-h-[62px] items-center justify-between gap-4 px-4 sm:px-7 lg:px-9">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--muted)]">
+                <span>VeriSense</span>
+                <span className="text-[var(--border-strong)]">/</span>
+                <span className="truncate text-[var(--accent)]">
+                  {pageTitles[activeTab] || 'Workspace'}
+                </span>
+              </div>
 
-        {activeTab === 'history' && <HistoryPage />}
+              <p className="mt-1 truncate text-xs font-semibold text-[var(--text-secondary)]">
+                Multimodal media forensics workspace
+              </p>
+            </div>
 
-        {activeTab === 'methodology' && (
-          <MethodologyPage onExploreCode={() => setActiveTab('code')} />
-        )}
+            <div className="hidden items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 sm:flex">
+              <span className="h-2 w-2 rounded-full bg-[var(--success)]" />
+              <span className="text-[10px] font-bold tracking-wide text-[var(--text-secondary)]">
+                FORENSIC WORKSPACE
+              </span>
+            </div>
+          </div>
+        </header>
 
-        {activeTab === 'code' && <CodeExplorerPage />}
+        <main className="min-w-0 flex-1">
+          {activeTab === 'analyze' && (
+            <AnalyzePage
+              onAnalysisComplete={handleAnalysisComplete}
+              apiBaseUrl={apiBaseUrl}
+            />
+          )}
 
-        {activeTab === 'settings' && (
-          <SettingsPage
-            apiBaseUrl={apiBaseUrl}
-            setApiBaseUrl={setApiBaseUrl}
-            inconclusiveLower={inconclusiveLower}
-            setInconclusiveLower={setInconclusiveLower}
-            inconclusiveUpper={inconclusiveUpper}
-            setInconclusiveUpper={setInconclusiveUpper}
-          />
-        )}
-      </main>
+          {activeTab === 'results' &&
+            activeResult &&
+            activeFile &&
+            activePreviewUrl && (
+              <ResultsPage
+                result={activeResult}
+                originalFile={activeFile}
+                previewUrl={activePreviewUrl}
+                onReset={handleReset}
+              />
+            )}
 
-      {/* Footer */}
-      <Footer onNavigateToCode={() => setActiveTab('code')} />
+          {activeTab === 'results' && !activeResult && (
+            <div className="mx-auto max-w-3xl px-6 py-20 text-center">
+              <h2 className="text-xl font-bold">No analysis available</h2>
+              <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                Upload a media file and run an analysis to view its results.
+              </p>
+              <button
+                onClick={() => setActiveTab('analyze')}
+                className="mt-5 rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-bold text-white"
+              >
+                Start an analysis
+              </button>
+            </div>
+          )}
+
+          {activeTab === 'history' && <HistoryPage />}
+
+          {activeTab === 'methodology' && (
+            <MethodologyPage onExploreCode={() => setActiveTab('code')} />
+          )}
+
+          {activeTab === 'code' && <CodeExplorerPage />}
+
+          {activeTab === 'settings' && (
+            <SettingsPage
+              apiBaseUrl={apiBaseUrl}
+              setApiBaseUrl={setApiBaseUrl}
+              inconclusiveLower={inconclusiveLower}
+              setInconclusiveLower={setInconclusiveLower}
+              inconclusiveUpper={inconclusiveUpper}
+              setInconclusiveUpper={setInconclusiveUpper}
+            />
+          )}
+        </main>
+
+        <Footer onNavigateToCode={() => setActiveTab('code')} />
+      </div>
     </div>
   );
 }
