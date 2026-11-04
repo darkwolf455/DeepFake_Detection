@@ -2,15 +2,13 @@ import React, { useState } from 'react';
 import {
   Code2,
   FileCode,
-  Folder,
   FolderOpen,
   Copy,
   Check,
   Download,
   Terminal,
-  BookOpen,
-  FileText,
 } from 'lucide-react';
+import { motion } from 'motion/react';
 
 interface RepoFile {
   path: string;
@@ -313,24 +311,24 @@ export const CodeExplorerPage: React.FC = () => {
   return (
     <div className="max-w-6xl mx-auto px-4 py-8 sm:py-12 space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[var(--border)]">
         <div>
           <div className="flex items-center gap-2">
-            <span className="text-xs font-mono text-cyan-400 font-semibold uppercase tracking-wider">
+            <span className="text-xs font-mono text-[var(--accent)] font-semibold uppercase tracking-wider">
               Python 3.10+ • PyTorch 2.x
             </span>
           </div>
-          <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-1 flex items-center gap-2.5">
-            <Code2 className="w-7 h-7 text-cyan-400" />
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-[var(--text)] mt-1 flex items-center gap-2.5">
+            <Code2 className="w-7 h-7 text-[var(--accent)]" />
             <span>Repository & Model Training Source</span>
           </h2>
-          <p className="text-slate-400 text-xs sm:text-sm mt-1">
+          <p className="text-[var(--text-secondary)] text-xs sm:text-sm mt-1">
             Browse runnable Python training pipelines, configs, face extraction, and calibration modules created for local execution in VS Code.
           </p>
         </div>
 
         <div className="flex items-center gap-2 font-mono text-xs">
-          <span className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">
+          <span className="px-2.5 py-1 rounded-lg bg-[var(--surface-2)] border border-[var(--border)] text-[var(--text-secondary)]">
             verisense/
           </span>
         </div>
@@ -339,9 +337,9 @@ export const CodeExplorerPage: React.FC = () => {
       {/* Explorer Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left: File Tree List */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-2 h-[550px] overflow-y-auto">
-          <div className="flex items-center gap-2 px-2 pb-2 mb-2 border-b border-slate-800 text-xs font-bold text-slate-400 uppercase tracking-wider">
-            <FolderOpen className="w-4 h-4 text-cyan-400" />
+        <div className="vs-card p-4 space-y-2 h-[550px] overflow-y-auto shadow-md">
+          <div className="flex items-center gap-2 px-2 pb-2 mb-2 border-b border-[var(--border)] text-xs font-bold text-[var(--muted)] uppercase tracking-wider">
+            <FolderOpen className="w-4 h-4 text-[var(--accent)]" />
             <span>Project Files</span>
           </div>
 
@@ -353,14 +351,14 @@ export const CodeExplorerPage: React.FC = () => {
                 onClick={() => setSelectedFile(file)}
                 className={`w-full text-left p-2.5 rounded-xl transition-all flex items-start gap-2.5 ${
                   isSelected
-                    ? 'bg-cyan-500/15 border border-cyan-500/30 text-cyan-300'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                    ? 'bg-[var(--accent-soft)] border border-[var(--accent)]/30 text-[var(--accent)] font-bold'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
                 }`}
               >
-                <FileCode className={`w-4 h-4 shrink-0 mt-0.5 ${isSelected ? 'text-cyan-400' : 'text-slate-500'}`} />
+                <FileCode className={`w-4 h-4 shrink-0 mt-0.5 ${isSelected ? 'text-[var(--accent)]' : 'text-[var(--muted)]'}`} />
                 <div className="min-w-0">
                   <div className="text-xs font-mono font-medium truncate">{file.path}</div>
-                  <div className="text-[10px] text-slate-500 font-sans mt-0.5">{file.category}</div>
+                  <div className="text-[10px] text-[var(--muted)] font-sans mt-0.5">{file.category}</div>
                 </div>
               </button>
             );
@@ -368,30 +366,30 @@ export const CodeExplorerPage: React.FC = () => {
         </div>
 
         {/* Right: Code Viewer & Actions */}
-        <div className="lg:col-span-2 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xl flex flex-col h-[550px] overflow-hidden">
+        <div className="vs-card lg:col-span-2 shadow-md flex flex-col h-[550px] overflow-hidden">
           {/* Top file meta header */}
-          <div className="p-4 border-b border-slate-800 bg-slate-950/70 flex items-center justify-between gap-3">
+          <div className="p-4 border-b border-[var(--border)] bg-[var(--surface-2)] flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <FileCode className="w-4 h-4 text-cyan-400 shrink-0" />
-                <span className="font-mono text-xs font-bold text-slate-200 truncate">
+                <FileCode className="w-4 h-4 text-[var(--accent)] shrink-0" />
+                <span className="font-mono text-xs font-bold text-[var(--text)] truncate">
                   {selectedFile.path}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 mt-0.5 truncate">{selectedFile.description}</p>
+              <p className="text-[11px] text-[var(--text-secondary)] mt-0.5 truncate">{selectedFile.description}</p>
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
               <button
                 onClick={handleCopy}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors"
+                className="vs-button-secondary px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5"
               >
-                {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                {copied ? <Check className="w-3.5 h-3.5 text-[var(--success)]" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{copied ? 'Copied' : 'Copy'}</span>
               </button>
               <button
                 onClick={handleDownloadFile}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 transition-colors"
+                className="vs-button-primary px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Download</span>
@@ -400,7 +398,7 @@ export const CodeExplorerPage: React.FC = () => {
           </div>
 
           {/* Syntax Highlighted Code Box */}
-          <div className="p-4 flex-1 overflow-auto bg-slate-950 font-mono text-xs text-slate-300 leading-relaxed">
+          <div className="p-4 flex-1 overflow-auto bg-[var(--surface-2)] font-mono text-xs text-[var(--text)] leading-relaxed">
             <pre>
               <code>{selectedFile.snippet}</code>
             </pre>
@@ -409,4 +407,4 @@ export const CodeExplorerPage: React.FC = () => {
       </div>
     </div>
   );
-};
+}

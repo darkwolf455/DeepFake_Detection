@@ -1,59 +1,169 @@
-import React from 'react';
-import { ShieldCheck, Cpu, GitBranch, Lock } from 'lucide-react';
 
-export const Footer: React.FC<{ onNavigateToCode?: () => void }> = ({ onNavigateToCode }) => {
+import React from 'react';
+import {
+  ShieldCheck,
+  Cpu,
+  GitBranch,
+  Lock,
+  ArrowUpRight,
+  Fingerprint,
+} from 'lucide-react';
+
+export const Footer: React.FC<{
+  onNavigateToCode?: () => void;
+}> = ({ onNavigateToCode }) => {
   return (
-    <footer className="w-full border-t border-slate-800/80 bg-[#0B0F19] text-slate-400 text-xs py-8 mt-auto">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <div className="md:col-span-2 space-y-2">
-            <div className="flex items-center gap-2 text-slate-200 font-bold text-sm">
-              <ShieldCheck className="w-4 h-4 text-cyan-400" />
-              <span>VeriSense Multimodal Forensic Platform</span>
+    <footer
+      className="w-full mt-auto border-t"
+      style={{
+        background: 'var(--footer-bg)',
+        borderColor: 'var(--border)',
+        color: 'var(--text-secondary)',
+      }}
+    >
+      <div className="max-w-[1500px] mx-auto px-5 sm:px-8 lg:px-10 py-10">
+
+        {/* TOP SECTION */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-9 pb-9">
+
+          {/* BRAND */}
+          <div className="lg:col-span-2 space-y-4">
+
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-gradient-to-br from-cyan-400 to-violet-600 shadow-lg shadow-cyan-500/15">
+                <ShieldCheck className="w-5 h-5 text-white" />
+              </div>
+
+              <div>
+                <h3
+                  className="font-extrabold text-base tracking-tight"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  VeriSense
+                </h3>
+                <p className="text-[10px] tracking-[0.16em] font-semibold"
+                  style={{ color: 'var(--text-muted)' }}>
+                  MULTIMODAL FORENSICS
+                </p>
+              </div>
             </div>
-            <p className="text-slate-400 text-xs leading-relaxed max-w-md">
-              A multimodal deepfake detection system detecting synthetic artifacts in images, video sequences, and audio waveforms using CLIP ViT-L/14, temporal sequence transformers, and Wav2Vec2 XLS-R.
+
+            <p className="text-xs leading-6 max-w-md"
+              style={{ color: 'var(--text-secondary)' }}>
+              An intelligent multimodal deepfake forensic platform
+              designed to identify synthetic artifacts across images,
+              video sequences and audio waveforms.
             </p>
+
+            <div
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border text-[10px] font-semibold tracking-wide"
+              style={{
+                background: 'var(--surface)',
+                borderColor: 'var(--border)',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              RESEARCH PLATFORM · VERSION 1.0
+            </div>
           </div>
 
-          <div className="space-y-2">
-            <h4 className="text-slate-200 font-semibold text-xs tracking-wider uppercase">Architecture</h4>
-            <ul className="space-y-1 text-slate-400">
-              <li>Vision: Frozen CLIP ViT-L/14 + Head</li>
-              <li>Temporal: 4-Layer Transformer Encoder</li>
-              <li>Audio: Wav2Vec2-XLS-R-300M + Attn Pooling</li>
-              <li>Fusion: Platt Calibrated Late-Fusion MLP</li>
+          {/* ARCHITECTURE */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <Cpu size={15} style={{ color: 'var(--accent)' }} />
+              <h4
+                className="text-[11px] font-bold tracking-[0.14em] uppercase"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                Architecture
+              </h4>
+            </div>
+
+            <ul className="space-y-3 text-[11px] leading-relaxed">
+              <li>
+                <span style={{ color: 'var(--text-primary)' }}>Vision</span>
+                <p>CLIP ViT-L/14 + Classification Head</p>
+              </li>
+              <li>
+                <span style={{ color: 'var(--text-primary)' }}>Temporal</span>
+                <p>4-Layer Transformer Encoder</p>
+              </li>
+              <li>
+                <span style={{ color: 'var(--text-primary)' }}>Audio</span>
+                <p>Wav2Vec2 XLS-R + Attention Pooling</p>
+              </li>
+              <li>
+                <span style={{ color: 'var(--text-primary)' }}>Fusion</span>
+                <p>Calibrated Late-Fusion MLP</p>
+              </li>
             </ul>
           </div>
 
-          <div className="space-y-2">
-            <h4 className="text-slate-200 font-semibold text-xs tracking-wider uppercase">Privacy & Safety</h4>
-            <div className="flex items-center gap-2 text-slate-400">
-              <Lock className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Zero media retention (in-memory unlinking)</span>
+          {/* SECURITY */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <Lock size={15} style={{ color: 'var(--accent)' }} />
+              <h4
+                className="text-[11px] font-bold tracking-[0.14em] uppercase"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                Security & Privacy
+              </h4>
             </div>
-            <div className="flex items-center gap-2 text-slate-400">
-              <Cpu className="w-3.5 h-3.5 text-violet-400" />
-              <span>GPU Accelerated (FP16 AMP)</span>
+
+            <div className="space-y-3 text-[11px]">
+              <div className="flex items-start gap-2.5">
+                <Lock size={14} className="mt-0.5 shrink-0 text-emerald-500" />
+                <span>Zero media retention (in-memory unlinking)</span>
+              </div>
+
+              <div className="flex items-start gap-2.5">
+                <Cpu size={14} className="mt-0.5 shrink-0 text-violet-500" />
+                <span>GPU Accelerated (FP16 AMP)</span>
+              </div>
+
+              <div className="flex items-start gap-2.5">
+                <Fingerprint size={14} className="mt-0.5 shrink-0"
+                  style={{ color: 'var(--accent)' }} />
+                <span>SHA-256 forensic integrity verification</span>
+              </div>
             </div>
+
             {onNavigateToCode && (
               <button
+                type="button"
                 onClick={onNavigateToCode}
-                className="inline-flex items-center gap-1.5 text-cyan-400 hover:text-cyan-300 mt-2 font-mono text-[11px]"
+                className="inline-flex items-center gap-2 text-[11px] font-semibold transition-colors hover:opacity-70"
+                style={{ color: 'var(--accent)' }}
               >
-                <GitBranch className="w-3 h-3" />
-                Browse Python Source & Weights
+                <GitBranch size={13} />
+                Explore Source Code
+                <ArrowUpRight size={12} />
               </button>
             )}
           </div>
         </div>
 
-        <div className="pt-6 border-t border-slate-800/60 flex flex-col sm:flex-row items-center justify-between gap-4 text-slate-500 text-[11px]">
-          <div>
-            &copy; 2026 VeriSense Research Project. All algorithms calibrated on FaceForensics++, GenImage & ASVspoof 2019.
-          </div>
-          <div className="font-mono text-[11px] text-slate-400">
-            SHA-256 Verified • RFC 4122 UUID v4
+        {/* BOTTOM SECTION */}
+        <div
+          className="pt-5 border-t flex flex-col md:flex-row items-start md:items-center justify-between gap-3"
+          style={{ borderColor: 'var(--border)' }}
+        >
+          <p className="text-[10px] leading-relaxed"
+            style={{ color: 'var(--text-muted)' }}>
+            © 2026 VeriSense Research Project. All rights reserved.
+          </p>
+
+          <div
+            className="flex flex-wrap items-center gap-3 text-[10px] font-mono"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <span>SHA-256 VERIFIED</span>
+            <span className="opacity-30">/</span>
+            <span>RFC 4122 UUID V4</span>
+            <span className="opacity-30">/</span>
+            <span>VERISENSE V1.0</span>
           </div>
         </div>
       </div>
