@@ -14,6 +14,41 @@ import torch
 from torch.utils.data import Dataset, WeightedRandomSampler
 
 
+class ImageReadError(RuntimeError):
+    """Raised when an image file is missing, unreadable, or corrupt."""
+
+
+def _resolve_image_path(raw_path, data_root: Optional[Path], row_number: int) -> Path:
+    """Resolve one manifest path without guessing a root from the CWD."""
+    if pd.isna(raw_path):
+        raise ValueError(f"Row {row_number} has a missing file_path value.")
+
+    text = str(raw_path).strip()
+    if not text:
+        raise ValueError(f"Row {row_number} has an empty file_path value.")
+
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+
+    if data_root is None:
+        raise ValueError(
+            f"Row {row_number} has relative file_path '{text}', but data_root is "
+            "not set. Set data.data_root in configs/image.yaml; the loader will "
+            "not guess a root from the working directory."
+        )
+
+    return (data_root / path).resolve()
+
+
+def build_jpeg_compression(quality_min: int, quality_max: int, p: float) -> A.ImageCompression:
+    """Create an ImageCompression transform compatible with Albumentations 1.x/2.x."""
+    try:
+        return A.ImageCompression(quality_range=(quality_min, quality_max), p=p)
+    except TypeError:
+        return A.ImageCompression(quality_lower=quality_min, quality_upper=quality_max, p=p)
+
+
 def get_image_transforms(config, is_training: bool = True) -> A.Compose:
     img_size = config.data.image_size if hasattr(config, "data") else 224
 
@@ -28,7 +63,7 @@ def get_image_transforms(config, is_training: bool = True) -> A.Compose:
         return A.Compose([
             A.Resize(img_size, img_size),
             A.HorizontalFlip(p=hflip_prob),
-            A.ImageCompression(quality_lower=jpeg_min, quality_upper=jpeg_max, p=0.6),
+            build_jpeg_compression(jpeg_min, jpeg_max, p=0.6),
             A.GaussianBlur(blur_limit=(3, 7), p=blur_prob),
             A.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05, p=jitter_prob),
             A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, p=0.3),
@@ -62,6 +97,7 @@ class DeepfakeImageDataset(Dataset):
         csv_file: str | Path,
         transform: Optional[A.Compose] = None,
         debug_limit: Optional[int] = None,
+        data_root: Optional[str | Path] = None,
     ):
         self.csv_file = Path(csv_file)
         self.transform = transform
@@ -69,11 +105,23 @@ class DeepfakeImageDataset(Dataset):
         if not self.csv_file.exists():
             raise FileNotFoundError(f"Split CSV not found: {self.csv_file}")
 
+        if data_root is not None and str(data_root).strip() == "":
+            raise ValueError("data_root must not be empty when provided.")
+
+        self.data_root = (
+            Path(data_root).expanduser().resolve() if data_root is not None else None
+        )
+
         self.df = pd.read_csv(self.csv_file)
 
         # Standardize column names
-        col_map = {"path": "file_path", "image_path": "file_path"}
+        col_map = {"path": "file_path", "image_path": "file_path", "filepath": "file_path"}
         self.df = self.df.rename(columns=col_map)
+
+        if "file_path" not in self.df.columns:
+            raise ValueError(
+                "CSV must contain a 'file_path' column (or 'path'/'image_path'/'filepath')"
+            )
 
         if "label" not in self.df.columns:
             raise ValueError("CSV must contain a 'label' column (0 for real, 1 for fake)")
@@ -81,24 +129,69 @@ class DeepfakeImageDataset(Dataset):
         if debug_limit is not None and debug_limit > 0:
             self.df = self.df.head(debug_limit)
 
+        raw_paths = self.df["file_path"].tolist()
+        has_relative_paths = False
+        for raw_path in raw_paths:
+            if pd.isna(raw_path) or not str(raw_path).strip():
+                continue
+            if not Path(str(raw_path).strip()).expanduser().is_absolute():
+                has_relative_paths = True
+                break
+
+        if has_relative_paths:
+            if self.data_root is None:
+                raise ValueError(
+                    "Split CSV contains relative file_path values, but data_root was "
+                    "not provided. Set data.data_root in configs/image.yaml; the "
+                    "loader will not guess a root from the working directory."
+                )
+            if not self.data_root.exists():
+                raise FileNotFoundError(
+                    f"Configured data_root does not exist: {self.data_root}"
+                )
+            if not self.data_root.is_dir():
+                raise NotADirectoryError(
+                    f"Configured data_root is not a directory: {self.data_root}"
+                )
+
+        self._resolved_paths = [
+            _resolve_image_path(raw_path, self.data_root, index)
+            for index, raw_path in enumerate(raw_paths)
+        ]
+
     def __len__(self) -> int:
         return len(self.df)
 
     def __getitem__(self, idx: int) -> dict:
         row = self.df.iloc[idx]
-        img_path = row["file_path"]
+        raw_path = row["file_path"]
+        img_path = self._resolved_paths[idx]
         label = int(row["label"])
         generator = row["generator"] if "generator" in row else "unknown"
 
-        # Read image using OpenCV BGR -> RGB
-        image = cv2.imread(img_path)
-        if image is None:
-            # Fallback to PIL or blank canvas to prevent worker crashes
+        if not img_path.exists():
+            raise ImageReadError(
+                f"Failed to read image '{img_path}': file not found. "
+                f"Manifest file_path='{raw_path}', data_root='{self.data_root}'."
+            )
+        if not img_path.is_file():
+            raise ImageReadError(
+                f"Failed to read image '{img_path}': path is not a regular file. "
+                f"Manifest file_path='{raw_path}', data_root='{self.data_root}'."
+            )
+
+        # Read image using OpenCV BGR -> RGB, with a strict PIL fallback.
+        image = cv2.imread(str(img_path))
+        if image is None or image.size == 0:
             try:
-                pil_img = Image.open(img_path).convert("RGB")
-                image = np.array(pil_img)
-            except Exception:
-                image = np.zeros((224, 224, 3), dtype=np.uint8)
+                with Image.open(img_path) as pil_img:
+                    image = np.array(pil_img.convert("RGB"))
+            except Exception as exc:
+                raise ImageReadError(
+                    f"Failed to read image '{img_path}'. The file may be unreadable "
+                    f"or corrupt. Manifest file_path='{raw_path}', "
+                    f"data_root='{self.data_root}'."
+                ) from exc
         else:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 

@@ -13,6 +13,11 @@ model:
   lora_target_modules: ["q_proj", "v_proj"]
 
 data:
+  # Base directory for relative file_path values in the split CSVs.
+  # Must match the --data-root used by prepare_image_data.py.
+  # Relative paths are resolved against this root at dataset construction;
+  # the loader never falls back to guessing a root from the working directory.
+  data_root: "."
   train_split_csv: "data/splits/image_train.csv"
   val_split_csv: "data/splits/image_val.csv"
   test_split_csv: "data/splits/image_test.csv"

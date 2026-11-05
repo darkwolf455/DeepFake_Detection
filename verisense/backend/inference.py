@@ -23,6 +23,7 @@ from backend.schemas import (
     ModelVersion,
     TimelinePoint,
     VerdictEnum,
+    image_model_version,
 )
 from backend.settings import settings
 from src.audio.model import Wav2Vec2DeepfakeDetector
@@ -59,16 +60,23 @@ class InferenceManager:
 
         # 1. Image Model
         try:
-            self.image_model = CLIPDeepfakeDetector().to(self.device)
             if settings.image_checkpoint.exists():
-                load_checkpoint(settings.image_checkpoint, self.image_model, device=self.device)
-                self.active_branches.append("image")
+                self.image_model = CLIPDeepfakeDetector.from_checkpoint(
+                    settings.image_checkpoint, self.device
+                )
+                if self.image_model is not None:
+                    self.active_branches.append("image")
+                    self.gradcam = ViTGradCAM(self.image_model)
+                else:
+                    self.missing_checkpoints.append("image")
             else:
+                # Do not construct the CLIP backbone without a trained checkpoint:
+                # that would download pretrained weights for no useful purpose.
                 self.missing_checkpoints.append("image")
-            self.image_model.eval()
-            self.gradcam = ViTGradCAM(self.image_model)
         except Exception as e:
             print(f"Error loading Image model: {e}")
+            self.image_model = None
+            self.gradcam = None
             self.missing_checkpoints.append("image")
 
         # 2. Video Model
@@ -153,7 +161,11 @@ class InferenceManager:
                 std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1).to(self.device)
                 norm_tensor = (tensor - mean) / std
 
-                if self.image_model is not None and "image" in self.active_branches:
+                image_model_active = (
+                    self.image_model is not None and "image" in self.active_branches
+                )
+
+                if image_model_active:
                     with torch.no_grad():
                         logits = self.image_model(norm_tensor)
                         prob = float(torch.softmax(logits, dim=-1)[0, 1].cpu().item())
@@ -176,7 +188,7 @@ class InferenceManager:
                     Image.fromarray(overlay).save(heatmap_path)
                     heatmap_url = f"/heatmaps/{req_id}.png"
 
-                models_used.append(ModelVersion(name="CLIP ViT-L/14 Vision Head", version="1.0.0", modality="image"))
+                models_used.append(image_model_version(image_model_active))
 
             # ---------------- VIDEO ANALYSIS ----------------
             elif modality == "video":

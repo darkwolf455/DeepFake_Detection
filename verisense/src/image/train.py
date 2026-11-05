@@ -102,8 +102,38 @@ def evaluate_epoch(
     return loss_meter.avg, metrics
 
 
+def build_train_loader(
+    dataset,
+    batch_size: int,
+    sampler=None,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+) -> DataLoader:
+    """Build a training loader that never leaves a batch of size 1 for BatchNorm."""
+    if batch_size < 2:
+        raise ValueError("Training batch size must be at least 2 for BatchNorm1d.")
+    if len(dataset) < 2:
+        raise ValueError("Training split must contain at least 2 images.")
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=(sampler is None),
+        sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        drop_last=(len(dataset) >= batch_size),
+    )
+
+
 def train_image_model(config_path: str, debug: bool = False):
     config = load_config(config_path)
+    data_root = config.data.get("data_root")
+    if data_root is None or not str(data_root).strip():
+        raise ValueError(
+            "config.data.data_root must be set to the base directory for "
+            "manifest file_path values; the loader will not guess a root."
+        )
     set_seed(config.training.seed)
     setup_logging()
 
@@ -116,16 +146,25 @@ def train_image_model(config_path: str, debug: bool = False):
     val_transform = get_image_transforms(config, is_training=False)
 
     limit = 64 if debug else None
-    train_dataset = DeepfakeImageDataset(config.data.train_split_csv, transform=train_transform, debug_limit=limit)
-    val_dataset = DeepfakeImageDataset(config.data.val_split_csv, transform=val_transform, debug_limit=limit)
+    train_dataset = DeepfakeImageDataset(
+        config.data.train_split_csv,
+        transform=train_transform,
+        debug_limit=limit,
+        data_root=data_root,
+    )
+    val_dataset = DeepfakeImageDataset(
+        config.data.val_split_csv,
+        transform=val_transform,
+        debug_limit=limit,
+        data_root=data_root,
+    )
 
     sampler = train_dataset.get_sampler() if config.data.class_balanced_sampling and not debug else None
     batch_size = 8 if debug else config.data.batch_size
 
-    train_loader = DataLoader(
+    train_loader = build_train_loader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=(sampler is None),
         sampler=sampler,
         num_workers=num_workers,
         pin_memory=(device.type == "cuda"),
@@ -190,7 +229,7 @@ def train_image_model(config_path: str, debug: bool = False):
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "val_metrics": val_metrics,
-                    "config": config,
+                    "config": config.to_dict(),
                 },
                 checkpoint_dir,
                 filename=config.training.checkpoint_name,
@@ -198,7 +237,12 @@ def train_image_model(config_path: str, debug: bool = False):
 
         # Save last checkpoint
         save_checkpoint(
-            {"epoch": epoch, "model_state_dict": model.state_dict(), "val_metrics": val_metrics},
+            {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "val_metrics": val_metrics,
+                "config": config.to_dict(),
+            },
             checkpoint_dir,
             filename="image_last.pt",
         )

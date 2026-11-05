@@ -31,6 +31,22 @@ class ModelVersion(BaseModel):
     status: str = "active"
 
 
+def image_model_version(is_active: bool) -> ModelVersion:
+    """Return truthful metadata for the image branch."""
+    if is_active:
+        return ModelVersion(
+            name="CLIP ViT-L/14 Vision Head",
+            version="1.0.0",
+            modality="image",
+        )
+    return ModelVersion(
+        name="FFT High-Frequency Heuristic",
+        version="0.0.0",
+        modality="image",
+        status="fallback",
+    )
+
+
 class ModalityScores(BaseModel):
     image: Optional[float] = Field(None, ge=0.0, le=1.0)
     video: Optional[float] = Field(None, ge=0.0, le=1.0)

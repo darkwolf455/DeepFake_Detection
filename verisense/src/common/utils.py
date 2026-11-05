@@ -4,11 +4,16 @@ Common utility functions: reproducibility, device management, AMP, logging, and 
 
 import logging
 import os
+import pickle
 import random
 from pathlib import Path
 from typing import Any, Dict, Optional
 import numpy as np
 import torch
+
+
+def _mps_available() -> bool:
+    return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 
 
 def set_seed(seed: int = 42):
@@ -21,18 +26,25 @@ def set_seed(seed: int = 42):
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+    if _mps_available():
+        torch.mps.manual_seed(seed)
 
 
 def get_device(requested_device: Optional[str] = None) -> torch.device:
     if requested_device:
         device = torch.device(requested_device)
         if device.type == "cuda" and not torch.cuda.is_available():
-            logging.warning("CUDA requested but not available. Falling back to CPU.")
+            logging.warning("CUDA requested but not available. Falling back to MPS/CPU.")
+            return torch.device("mps") if _mps_available() else torch.device("cpu")
+        if device.type == "mps" and not _mps_available():
+            logging.warning("MPS requested but not available. Falling back to CPU.")
             return torch.device("cpu")
         return device
 
     if torch.cuda.is_available():
         return torch.device("cuda:0")
+    if _mps_available():
+        return torch.device("mps")
     return torch.device("cpu")
 
 
@@ -110,6 +122,34 @@ def save_checkpoint(
     logging.info(f"Saved checkpoint to {target_file}")
 
 
+def load_checkpoint_dict(
+    checkpoint_path: str | Path,
+    device: torch.device = torch.device("cpu"),
+) -> Dict[str, Any]:
+    """Load a checkpoint dictionary before the model exists.
+
+    Safe tensor-only loading is attempted first. Older VeriSense checkpoints may
+    contain non-tensor objects such as the custom ConfigDict; those are retried
+    with weights_only=False after an explicit warning.
+    """
+    path = Path(checkpoint_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint file does not exist: {path}")
+
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=True)
+    except pickle.UnpicklingError:
+        logging.warning(
+            "Checkpoint %s contains non-tensor objects; retrying with weights_only=False.",
+            path,
+        )
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+
+    if not isinstance(checkpoint, dict):
+        raise ValueError(f"Checkpoint does not contain a dictionary: {path}")
+    return checkpoint
+
+
 def load_checkpoint(
     checkpoint_path: str | Path,
     model: torch.nn.Module,
@@ -117,10 +157,7 @@ def load_checkpoint(
     device: torch.device = torch.device("cpu"),
 ) -> Dict[str, Any]:
     path = Path(checkpoint_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Checkpoint file does not exist: {path}")
-
-    checkpoint = torch.load(path, map_location=device)
+    checkpoint = load_checkpoint_dict(path, device=device)
     if "model_state_dict" in checkpoint:
         model.load_state_dict(checkpoint["model_state_dict"])
     elif "state_dict" in checkpoint:

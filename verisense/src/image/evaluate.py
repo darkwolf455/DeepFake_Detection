@@ -18,15 +18,15 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src.common.config import load_config
 from src.common.metrics import compute_binary_metrics
-from src.common.utils import get_device, load_checkpoint
-from src.image.dataset import DeepfakeImageDataset
+from src.common.utils import get_device, load_checkpoint_dict
+from src.image.dataset import DeepfakeImageDataset, build_jpeg_compression
 from src.image.model import CLIPDeepfakeDetector
 
 
 def get_robustness_transform(img_size: int = 224, jpeg_quality: int = 100, blur_radius: int = 0) -> A.Compose:
     aug_list = [A.Resize(img_size, img_size)]
     if jpeg_quality < 100:
-        aug_list.append(A.ImageCompression(quality_lower=jpeg_quality, quality_upper=jpeg_quality, p=1.0))
+        aug_list.append(build_jpeg_compression(jpeg_quality, jpeg_quality, p=1.0))
     if blur_radius > 0:
         aug_list.append(A.GaussianBlur(blur_limit=(blur_radius, blur_radius), p=1.0))
 
@@ -59,22 +59,36 @@ def run_evaluation(model, dataloader, device):
 
 def evaluate_image_model(config_path: str, checkpoint_path: str):
     config = load_config(config_path)
+    data_root = config.data.get("data_root")
+    if data_root is None or not str(data_root).strip():
+        raise ValueError(
+            "config.data.data_root must be set to the base directory for "
+            "manifest file_path values; the loader will not guess a root."
+        )
     device = get_device()
     print(f"[VeriSense Image Eval] Evaluating checkpoint: {checkpoint_path} on {device}")
 
-    model = CLIPDeepfakeDetector(
-        model_name=config.model.name,
-        freeze_backbone=True,
-        head_type=config.model.head_type,
-        hidden_dim=config.model.hidden_dim,
-        use_lora=config.model.use_lora,
-    ).to(device)
+    checkpoint = load_checkpoint_dict(checkpoint_path, device=device)
+    checkpoint_config = checkpoint.get("config") or {}
+    model = CLIPDeepfakeDetector.from_config(checkpoint_config).to(device)
+    state_dict = (
+        checkpoint.get("model_state_dict")
+        or checkpoint.get("state_dict")
+        or checkpoint
+    )
+    model.load_state_dict(state_dict)
+    model.eval()
 
-    load_checkpoint(checkpoint_path, model, device=device)
+    data_cfg = checkpoint_config.get("data", {}) or {}
+    image_size = data_cfg.get("image_size", config.data.image_size)
 
     # 1. Standard Test Evaluation
-    eval_transform = get_robustness_transform(img_size=config.data.image_size)
-    test_dataset = DeepfakeImageDataset(config.data.test_split_csv, transform=eval_transform)
+    eval_transform = get_robustness_transform(img_size=image_size)
+    test_dataset = DeepfakeImageDataset(
+        config.data.test_split_csv,
+        transform=eval_transform,
+        data_root=data_root,
+    )
     test_loader = DataLoader(test_dataset, batch_size=config.data.val_batch_size, shuffle=False)
 
     y_true, y_prob, generators = run_evaluation(model, test_loader, device)
@@ -104,8 +118,12 @@ def evaluate_image_model(config_path: str, checkpoint_path: str):
     print("ROBUSTNESS BENCHMARK (JPEG Compression)")
     print("=" * 50)
     for q in [90, 70, 50, 30]:
-        rob_trans = get_robustness_transform(config.data.image_size, jpeg_quality=q)
-        rob_ds = DeepfakeImageDataset(config.data.test_split_csv, transform=rob_trans)
+        rob_trans = get_robustness_transform(image_size, jpeg_quality=q)
+        rob_ds = DeepfakeImageDataset(
+            config.data.test_split_csv,
+            transform=rob_trans,
+            data_root=data_root,
+        )
         rob_loader = DataLoader(rob_ds, batch_size=config.data.val_batch_size, shuffle=False)
         yt, yp, _ = run_evaluation(model, rob_loader, device)
         m = compute_binary_metrics(yt, yp)

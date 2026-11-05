@@ -35,6 +35,17 @@ class ConfigDict(dict):
             value = ConfigDict(value)
         super(ConfigDict, self).__setitem__(key, value)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a plain, recursively converted dictionary."""
+        def convert(value):
+            if isinstance(value, dict):
+                return {k: convert(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [convert(v) for v in value]
+            return value
+
+        return convert(self)
+
 
 def load_config(config_path: str | Path) -> ConfigDict:
     path = Path(config_path)
