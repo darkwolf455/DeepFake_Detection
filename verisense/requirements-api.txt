@@ -1,0 +1,14 @@
+# Image, video and audio inference; training dependencies remain in requirements.txt.
+torch>=2.6
+torchvision
+transformers>=4.38,<5
+numpy
+soundfile>=0.12.1
+scipy>=1.12.0
+imageio-ffmpeg>=0.6,<1
+pillow
+opencv-python-headless==4.11.0.86
+fastapi
+uvicorn
+pydantic-settings
+python-multipart

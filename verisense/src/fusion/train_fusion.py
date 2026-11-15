@@ -1,226 +1,175 @@
-"""
-VeriSense Multimodal Late Fusion & Calibration
-Combines unimodal predictions (Image, Video, Audio, AV-Sync) into a calibrated unified score.
-Features:
-- Handles missing modalities via input indicator masks
-- Compares Logistic Regression vs 2-layer MLP
-- Platt temperature scaling and Isotonic regression
-- Evaluates Expected Calibration Error (ECE) and reliability diagrams
-- Configurable inconclusive confidence band [lower, upper]
-"""
-
+"""Train small real-data late fusion; preserve official source partitions."""
 import argparse
+import hashlib
+import json
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+import warnings
+
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
 import torch
-import torch.nn as nn
-from torch.optim import Adam
+import yaml
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import balanced_accuracy_score, roc_auc_score
+from sklearn.preprocessing import StandardScaler
 
-import sys
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
-from src.common.config import load_config
-from src.common.metrics import compute_binary_metrics, compute_ece
-from src.common.utils import save_checkpoint, set_seed
-
-
-class MultimodalFusionMLP(nn.Module):
-    def __init__(self, in_features: int = 8, hidden_dim: int = 32, dropout: float = 0.1):
-        super().__init__()
-        # 4 scores + 4 presence indicator flags = 8 features
-        self.net = nn.Sequential(
-            nn.Linear(in_features, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x).squeeze(-1)
+from src.common.metrics import compute_binary_metrics, select_balanced_threshold as select_threshold
+from src.fusion.model import FEATURE_COLUMNS, LateFusionClassifier
 
 
-class CalibratedLateFusion:
-    def __init__(
-        self,
-        model_type: str = "mlp",
-        hidden_dim: int = 32,
-        temperature: float = 1.0,
-        inconclusive_range: Tuple[float, float] = (0.40, 0.65),
-    ):
-        self.model_type = model_type
-        self.temperature = temperature
-        self.inconclusive_lower, self.inconclusive_upper = inconclusive_range
-
-        if model_type == "mlp":
-            self.model = MultimodalFusionMLP(in_features=8, hidden_dim=hidden_dim)
-        else:
-            self.model = LogisticRegression(C=1.0)
-
-    def prepare_input_vector(self, scores_dict: Dict[str, Optional[float]]) -> np.ndarray:
-        """
-        Encodes available scores and missingness indicator flags.
-        Modality order: [image, video, audio, av_sync]
-        Vector: [s_img, s_vid, s_aud, s_sync, m_img, m_vid, m_aud, m_sync]
-        """
-        modalities = ["image", "video", "audio", "av_sync"]
-        feat = []
-        masks = []
-        for m in modalities:
-            val = scores_dict.get(m)
-            if val is not None and not np.isnan(val):
-                feat.append(float(val))
-                masks.append(1.0)
-            else:
-                feat.append(0.5)  # Impute uninformative prior
-                masks.append(0.0)
-
-        return np.array(feat + masks, dtype=np.float32)
-
-    def predict(self, scores_dict: Dict[str, Optional[float]]) -> Dict[str, any]:
-        x = self.prepare_input_vector(scores_dict)
-
-        if self.model_type == "mlp":
-            self.model.eval()
-            with torch.no_grad():
-                tensor_x = torch.from_numpy(x).unsqueeze(0)
-                raw_logit = self.model(tensor_x).item()
-                # Apply temperature scaling
-                calibrated_logit = raw_logit / self.temperature
-                calibrated_prob = 1.0 / (1.0 + np.exp(-calibrated_logit))
-        else:
-            calibrated_prob = float(self.model.predict_proba([x])[0, 1])
-
-        # Assign verdict based on calibrated confidence thresholds
-        if self.inconclusive_lower <= calibrated_prob <= self.inconclusive_upper:
-            verdict = "inconclusive"
-            confidence = float(1.0 - 2.0 * abs(calibrated_prob - 0.5))  # Uncertainty measure
-        elif calibrated_prob > self.inconclusive_upper:
-            verdict = "manipulated"
-            confidence = float(calibrated_prob)
-        else:
-            verdict = "authentic"
-            confidence = float(1.0 - calibrated_prob)
-
-        return {
-            "calibrated_prob": round(float(calibrated_prob), 4),
-            "verdict": verdict,
-            "confidence": round(float(confidence), 4),
-        }
+def sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def train_late_fusion(config_path: str, debug: bool = False):
-    config = load_config(config_path)
-    set_seed(42)
+def metrics(frame, scores, threshold):
+    result = compute_binary_metrics(frame["label"].to_numpy(), scores, threshold)
+    predictions = np.asarray(scores) >= threshold
+    result["balanced_accuracy"] = float(balanced_accuracy_score(frame["label"], predictions))
+    result["category_accuracy"] = {
+        category: {"n": int(mask.sum()), "accuracy": float((predictions[mask] == frame.loc[mask, "label"]).mean())}
+        for category in sorted(frame["category"].unique())
+        for mask in [frame["category"].eq(category).to_numpy()]
+    }
+    return result
 
-    csv_path = Path(config.data.features_csv)
-    if not csv_path.exists():
-        print(f"Feature table not found at {csv_path}. Generating synthetic multimodal samples...")
-        N = 200
-        np.random.seed(42)
-        labels = np.random.binomial(1, 0.5, N)
-        # Synthetic branch scores correlated with label
-        s_img = np.clip(labels * 0.7 + np.random.normal(0, 0.2, N), 0, 1)
-        s_vid = np.clip(labels * 0.75 + np.random.normal(0, 0.2, N), 0, 1)
-        s_aud = np.clip(labels * 0.65 + np.random.normal(0, 0.25, N), 0, 1)
-        s_sync = np.clip(labels * 0.6 + np.random.normal(0, 0.3, N), 0, 1)
 
-        # Simulate missing modalities (e.g. 20% silent videos, 30% images without video)
-        s_aud[np.random.rand(N) < 0.2] = np.nan
-        s_vid[np.random.rand(N) < 0.15] = np.nan
-        s_sync[np.isnan(s_aud) | np.isnan(s_vid)] = np.nan
+def load_features(features_dir, manifest_dir, splits=("train", "val", "test")):
+    provenance = json.loads((features_dir / "run_metadata.json").read_text())
+    if (provenance["feature_columns"] != list(FEATURE_COLUMNS)
+            or set(provenance["checkpoints"]) != {"image_head.pt", "video_best.pt", "audio_head.pt"}):
+        raise ValueError("Expected paired predictions from the three trained branches")
+    usable, coverage, raw_tables = {}, {}, []
+    categories = {(False, False): "real", (True, False): "video_only",
+                  (False, True): "audio_only", (True, True): "both"}
+    for split in splits:
+        manifest = manifest_dir / f"{split}.csv"
+        if sha256(manifest) != provenance["manifests"][split]:
+            raise ValueError(f"The {split} manifest changed after feature extraction")
+        types = {"source_file": str, "group_id": str}
+        plan = pd.read_csv(manifest, dtype=types).set_index("source_file")
+        raw = pd.read_csv(features_dir / f"{split}_features.csv", dtype=types).set_index("source_file")
+        if not plan.index.is_unique or not raw.index.is_unique or set(raw.index) != set(plan.index):
+            raise ValueError(f"Incomplete or duplicate {split} features; finish extraction first")
+        raw = raw.loc[plan.index]
+        columns = ["file_path", "group_id", "label", "split", "category", "modify_video", "modify_audio"]
+        if not raw[columns].equals(plan[columns]) or not raw["split"].eq(split).all():
+            raise ValueError(f"Feature labels/source assignments disagree with {split} manifest")
+        if raw[columns].isna().any().any() or not raw["status"].isin(["ok", "error"]).all():
+            raise ValueError(f"Invalid {split} labels or status")
+        for (video, audio), category in categories.items():
+            mask = raw["category"].eq(category)
+            if not (raw.loc[mask, "modify_video"].eq(video) & raw.loc[mask, "modify_audio"].eq(audio)).all():
+                raise ValueError("Categories disagree with annotation modification flags")
+        labels = raw["modify_video"].eq(True) | raw["modify_audio"].eq(True)
+        if not raw["label"].eq(labels.astype(int)).all():
+            raise ValueError("Labels disagree with annotation modification flags")
+        good = raw[raw["status"].eq("ok")].copy().reset_index()
+        values = good[list(FEATURE_COLUMNS)].to_numpy(dtype=float)
+        if (set(good["label"]) != {0, 1} or set(good["category"]) != set(categories.values())
+                or not np.isfinite(values).all() or not ((values >= 0) & (values <= 1)).all()
+                or not good["face_frames"].ge(4).all() or not good["scored_audio_windows"].ge(1).all()):
+            raise ValueError(f"Unusable {split} features; inspect extraction failures")
+        usable[split] = good
+        coverage[split] = {"total": len(raw), "scored": len(good), "rejected": len(raw) - len(good),
+                           "coverage": len(good) / len(raw), "categories": {}}
+        for category, group in raw.groupby("category"):
+            coverage[split]["categories"][category] = {
+                "total": len(group), "scored": int(group["status"].eq("ok").sum())}
+        raw_tables.append(raw.reset_index())
+    all_rows = pd.concat(raw_tables, ignore_index=True)
+    if (all_rows["source_file"].duplicated().any() or all_rows["file_path"].duplicated().any()
+            or all_rows.groupby("group_id")["split"].nunique().max() != 1):
+        raise ValueError("Duplicate videos or related sources cross partitions")
+    return usable, coverage, provenance
 
-        df = pd.DataFrame({"image_score": s_img, "video_score": s_vid, "audio_score": s_aud, "av_sync_score": s_sync, "label": labels})
-    else:
-        df = pd.read_csv(csv_path)
 
-    print(f"Loaded {len(df)} samples for fusion training.")
-
-    # Convert to feature vectors with mask indicators
-    fusion_engine = CalibratedLateFusion(
-        model_type=config.fusion.model_type,
-        hidden_dim=config.fusion.hidden_dim,
-        inconclusive_range=(config.calibration.inconclusive_lower, config.calibration.inconclusive_upper),
-    )
-
-    X_list = []
-    y_list = []
-    for _, row in df.iterrows():
-        s_dict = {
-            "image": row.get("image_score"),
-            "video": row.get("video_score"),
-            "audio": row.get("audio_score"),
-            "av_sync": row.get("av_sync_score"),
-        }
-        X_list.append(fusion_engine.prepare_input_vector(s_dict))
-        y_list.append(int(row["label"]))
-
-    X = np.array(X_list)
-    y = np.array(y_list)
-
-    split_idx = int(0.75 * len(X))
-    X_train, X_val = X[:split_idx], X[split_idx:]
-    y_train, y_val = y[:split_idx], y[split_idx:]
-
-    print(f"Training fusion model ({config.fusion.model_type})...")
-    if config.fusion.model_type == "mlp":
-        model = fusion_engine.model
-        optimizer = Adam(model.parameters(), lr=config.training.lr, weight_decay=config.training.weight_decay)
-        criterion = nn.BCEWithLogitsLoss()
-
-        t_X_train = torch.from_numpy(X_train)
-        t_y_train = torch.from_numpy(y_train).float()
-
-        epochs = 10 if debug else config.training.epochs
-        for epoch in range(epochs):
-            model.train()
-            optimizer.zero_grad()
-            logits = model(t_X_train)
-            loss = criterion(logits, t_y_train)
-            loss.backward()
-            optimizer.step()
-
-        # Learn Platt temperature scaling on validation set
-        model.eval()
-        with torch.no_grad():
-            val_logits = model(torch.from_numpy(X_val)).numpy()
-
-        # Find optimal temperature parameter T > 0 to minimize NLL
-        temperatures = np.linspace(0.5, 3.0, 50)
-        best_t = 1.0
-        min_ece = 1.0
-        for t in temperatures:
-            probs = 1.0 / (1.0 + np.exp(-val_logits / t))
-            ece_score, _ = compute_ece(y_val, probs)
-            if ece_score < min_ece:
-                min_ece = ece_score
-                best_t = t
-
-        fusion_engine.temperature = float(best_t)
-        calibrated_probs = 1.0 / (1.0 + np.exp(-val_logits / best_t))
-        val_metrics = compute_binary_metrics(y_val, calibrated_probs)
-        print(f"Fusion Calibration Complete! Optimal Temperature T={best_t:.2f} | ECE: {min_ece:.4f} | AUC: {val_metrics['auc']:.4f}")
-
-        # Save fusion model
-        save_checkpoint(
-            {
-                "model_state_dict": model.state_dict(),
-                "temperature": best_t,
-                "config": config,
-            },
-            config.training.checkpoint_dir,
-            filename=config.training.checkpoint_name,
-        )
+def train_late_fusion(features_dir, manifest_dir, output_dir, config, validation_only=False):
+    splits = ("train", "val") if validation_only else ("train", "val", "test")
+    tables, coverage, provenance = load_features(features_dir, manifest_dir, splits)
+    train, val = tables["train"], tables["val"]
+    scaler = StandardScaler().fit(train[list(FEATURE_COLUMNS)])
+    x_train, x_val = (scaler.transform(frame[list(FEATURE_COLUMNS)]) for frame in (train, val))
+    trials, best = [], None
+    for strength in sorted(config["regularization_candidates"]):
+        if not np.isfinite(strength) or strength <= 0:
+            raise ValueError("Regularization candidates must be positive and finite")
+        classifier = LogisticRegression(C=strength, class_weight="balanced", solver="lbfgs",
+                                        max_iter=config["max_iter"], random_state=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ConvergenceWarning)
+            classifier.fit(x_train, train["label"])
+        score = float(roc_auc_score(val["label"], classifier.predict_proba(x_val)[:, 1]))
+        trials.append({"C": float(strength), "validation_auc": score})
+        if best is None or score > best[0]:
+            best = score, classifier
+    if best is None:
+        raise ValueError("At least one regularization candidate is required")
+    classifier = best[1]
+    threshold = select_threshold(val["label"], classifier.predict_proba(x_val)[:, 1])
+    checkpoint = {
+        "model_type": "standardized_logistic_regression", "feature_columns": list(FEATURE_COLUMNS),
+        "class_names": ["real", "manipulated"], "decision_threshold": threshold,
+        "threshold_source": "validation", "calibrated": False,
+        "mean": torch.from_numpy(scaler.mean_.copy()), "scale": torch.from_numpy(scaler.scale_.copy()),
+        "weight": torch.from_numpy(classifier.coef_[0].copy()),
+        "bias": torch.from_numpy(classifier.intercept_.copy()), "C": float(classifier.C),
+        "provenance": provenance, "coverage": coverage,
+        "feature_tables": {split: sha256(features_dir / f"{split}_features.csv") for split in tables},
+    }
+    model = LateFusionClassifier(checkpoint).eval()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    temporary = output_dir / "fusion_best.tmp"
+    torch.save(checkpoint, temporary)
+    temporary.replace(output_dir / "fusion_best.pt")  # Freeze choices before test evaluation.
+    report = {"selected_on": "validation", "decision_threshold": threshold, "C": float(classifier.C),
+              "candidates": trials, "coverage": coverage, "baselines": {},
+              "provenance": provenance, "feature_tables": checkpoint["feature_tables"],
+              "scope": "Metrics cover usable clips only. Rejections are abstentions, not correct predictions. "
+                       "Source-video splits are preserved; speaker separation is unverified. Scores are uncalibrated."}
+    evaluation_split = "val" if validation_only else "test"
+    evaluation = tables[evaluation_split]
+    for split in (("val",) if validation_only else ("val", "test")):
+        frame = tables[split].copy()
+        with torch.inference_mode():
+            scores = model(frame[list(FEATURE_COLUMNS)].to_numpy()).numpy()
+        report[f"{split}_metrics"] = metrics(frame, scores, threshold)
+        frame["fusion_score"], frame["fusion_prediction"] = scores, (scores >= threshold).astype(int)
+        frame.to_csv(output_dir / f"fusion_{split}_predictions.csv", index=False)
+    for column in FEATURE_COLUMNS:
+        cutoff = select_threshold(val["label"], val[column])
+        report["baselines"][column] = {"threshold": cutoff,
+            f"{evaluation_split}_metrics": metrics(evaluation, evaluation[column].to_numpy(), cutoff)}
+    report[f"{evaluation_split}_majority_class_accuracy"] = float(evaluation["label"].value_counts(normalize=True).max())
+    if validation_only:
+        report["scope"] += " Validation development result only; no test split was read."
+    (output_dir / "fusion_metrics.json").write_text(json.dumps(report, indent=2, allow_nan=False))
+    print("Coverage (rejected clips receive no fusion decision):")
+    print(pd.DataFrame(coverage).T.drop(columns="categories").to_string())
+    print(json.dumps({key: report[key] for key in
+                     ("C", "decision_threshold", "val_metrics", "test_metrics") if key in report}, indent=2, allow_nan=False))
+    comparison = {name: dict(threshold=result["threshold"], **{
+        key: result[f"{evaluation_split}_metrics"][key] for key in ("accuracy", "balanced_accuracy", "auc", "f1")
+    }) for name, result in report["baselines"].items()}
+    comparison["fusion"] = dict(threshold=threshold, **{
+        key: report[f"{evaluation_split}_metrics"][key] for key in ("accuracy", "balanced_accuracy", "auc", "f1")})
+    print(f"{evaluation_split.title()} comparison; all cutoffs selected on validation:")
+    print(pd.DataFrame(comparison).T.to_string())
+    print(report["scope"])
+    print(f"Saved fusion_best.pt, metrics and predictions to {output_dir}")
+    return report
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train Multimodal Fusion & Calibration")
-    parser.add_argument("--config", type=str, default="configs/fusion.yaml")
-    parser.add_argument("--debug", action="store_true")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--features-dir", type=Path, required=True)
+    parser.add_argument("--manifest-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[2] / "configs/fusion.yaml")
+    parser.add_argument("--validation-only", action="store_true", help="Develop without opening the test split")
     args = parser.parse_args()
-
-    train_late_fusion(args.config, args.debug)
+    train_late_fusion(args.features_dir, args.manifest_dir, args.output_dir,
+                      yaml.safe_load(args.config.read_text()), args.validation_only)
 
 
 if __name__ == "__main__":

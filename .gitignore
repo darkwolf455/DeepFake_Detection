@@ -6,3 +6,11 @@ coverage/
 *.log
 .env*
 !.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+heatmaps_cache/
+verisense/checkpoints/*.pt
+verisense/checkpoints/lavdf/
+mentor_demo/
+artifacts/

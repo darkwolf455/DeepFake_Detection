@@ -1,6 +1,6 @@
 """
 Audio Deepfake Detection Model
-Backbone: Wav2Vec2 XLS-R 300M (or WavLM) with layer-wise learnable weights
+Backbone: frozen Wav2Vec2 base with layer-wise learnable weights
 Head: Multi-head attentive temporal pooling and MLP classification head
 """
 
@@ -30,9 +30,9 @@ class AttentivePooling(nn.Module):
 class Wav2Vec2DeepfakeDetector(nn.Module):
     def __init__(
         self,
-        backbone_name: str = "facebook/wav2vec2-xls-r-300m",
+        backbone_name: str = "facebook/wav2vec2-base",
         freeze_feature_extractor: bool = True,
-        unfreeze_last_n_layers: int = 2,
+        unfreeze_last_n_layers: int = 0,
         hidden_dim: int = 256,
         dropout: float = 0.15,
     ):
@@ -41,6 +41,9 @@ class Wav2Vec2DeepfakeDetector(nn.Module):
 
         # Load pretrained acoustic model
         self.backbone = AutoModel.from_pretrained(backbone_name)
+        self.freeze_backbone = unfreeze_last_n_layers == 0
+        if self.freeze_backbone:
+            self.backbone.requires_grad_(False)
 
         if freeze_feature_extractor and hasattr(self.backbone, "feature_extractor"):
             for param in self.backbone.feature_extractor.parameters():
@@ -69,7 +72,27 @@ class Wav2Vec2DeepfakeDetector(nn.Module):
             nn.Linear(hidden_dim, 2),
         )
 
-    def forward(self, input_values: torch.Tensor) -> torch.Tensor:
+    @classmethod
+    def from_checkpoint(cls, checkpoint):
+        if (checkpoint["model_name"] != "facebook/wav2vec2-base"
+                or checkpoint["class_names"] != ["real", "manipulated"]
+                or checkpoint["sample_rate"] != 16000 or checkpoint["duration"] != 4.0):
+            raise ValueError("Unsupported audio backbone, labels or preprocessing")
+        threshold = checkpoint["decision_threshold"]
+        if (type(threshold) not in (float, int) or not 0 < threshold < 1
+                or checkpoint.get("threshold_source") != "validation"):
+            raise ValueError("Audio cutoff must be between 0 and 1 and selected on validation")
+        model = cls(backbone_name=checkpoint["model_name"], hidden_dim=checkpoint["hidden_dim"],
+                    dropout=checkpoint["dropout"], unfreeze_last_n_layers=0)
+        expected = {key for key in model.state_dict() if not key.startswith("backbone.")}
+        if set(checkpoint["head_state_dict"]) != expected:
+            raise ValueError("Audio checkpoint must contain exactly the trained pooling and classifier weights")
+        model.load_state_dict(checkpoint["head_state_dict"], strict=False)
+        return model
+
+    def extract_features(self, input_values: torch.Tensor) -> torch.Tensor:
+        if self.freeze_backbone:
+            self.backbone.eval()
         # Request all hidden states from transformer
         outputs = self.backbone(input_values, output_hidden_states=True)
         hidden_states = outputs.hidden_states  # Tuple of (B, T, D)
@@ -78,9 +101,10 @@ class Wav2Vec2DeepfakeDetector(nn.Module):
         stacked = torch.stack(hidden_states, dim=0)  # (Layers, B, T, D)
         weighted_features = torch.sum(stacked * norm_weights.view(-1, 1, 1, 1), dim=0)  # (B, T, D)
 
-        pooled = self.pooler(weighted_features)
-        logits = self.head(pooled)
-        return logits
+        return self.pooler(weighted_features)
+
+    def forward(self, input_values: torch.Tensor) -> torch.Tensor:
+        return self.head(self.extract_features(input_values))
 
     @torch.no_grad()
     def compute_timeline(

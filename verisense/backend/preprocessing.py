@@ -7,31 +7,10 @@ Preprocessing and Media Validation:
 """
 
 import hashlib
-import os
 from pathlib import Path
 import tempfile
-from typing import Generator, Tuple
+from typing import Tuple
 from fastapi import HTTPException, UploadFile
-
-
-# Magic byte signatures
-SIGNATURES = {
-    # Images
-    b"\xff\xd8\xff": "image/jpeg",
-    b"\x89PNG\r\n\x1a\n": "image/png",
-    b"RIFF": "image/webp",  # WebP or WAV (checked further)
-    b"GIF87a": "image/gif",
-    b"GIF89a": "image/gif",
-    # Audio
-    b"ID3": "audio/mpeg",
-    b"\xff\xfb": "audio/mpeg",
-    b"\xff\xf3": "audio/mpeg",
-    b"fLaC": "audio/flac",
-    b"OggS": "audio/ogg",
-    # Video
-    b"ftyp": "video/mp4",
-    b"\x1a\x45\xdf\xa3": "video/webm",  # WebM or MKV
-}
 
 
 def detect_file_type_and_modality(head_bytes: bytes, filename: str) -> Tuple[str, str]:
@@ -102,30 +81,33 @@ class SafeTempFile:
         temp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
         self.temp_path = Path(temp.name)
 
-        bytes_written = 0
-        head_bytes = b""
+        try:
+            bytes_written = 0
+            head_bytes = b""
 
-        while chunk := await self.upload_file.read(1024 * 64):
-            bytes_written += len(chunk)
-            if bytes_written > self.max_bytes:
-                temp.close()
-                self.temp_path.unlink(missing_ok=True)
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File exceeds maximum permissible size of {self.max_bytes // (1024*1024)}MB.",
-                )
-            if len(head_bytes) < 64:
-                head_bytes += chunk[: 64 - len(head_bytes)]
+            while chunk := await self.upload_file.read(1024 * 64):
+                bytes_written += len(chunk)
+                if bytes_written > self.max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds maximum permissible size of {self.max_bytes // (1024*1024)}MB.",
+                    )
+                if len(head_bytes) < 64:
+                    head_bytes += chunk[: 64 - len(head_bytes)]
 
-            self.sha256.update(chunk)
-            temp.write(chunk)
+                self.sha256.update(chunk)
+                temp.write(chunk)
 
-        temp.close()
+            temp.close()
 
-        mime_type, modality = detect_file_type_and_modality(head_bytes, self.upload_file.filename)
-        file_hash = self.sha256.hexdigest()
+            mime_type, modality = detect_file_type_and_modality(head_bytes, self.upload_file.filename)
+            file_hash = self.sha256.hexdigest()
 
-        return self.temp_path, mime_type, modality, file_hash
+            return self.temp_path, mime_type, modality, file_hash
+        except BaseException:
+            temp.close()
+            self.temp_path.unlink(missing_ok=True)
+            raise
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.temp_path and self.temp_path.exists():

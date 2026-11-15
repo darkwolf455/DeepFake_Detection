@@ -3,6 +3,7 @@ Common utility functions: reproducibility, device management, AMP, logging, and 
 """
 
 import logging
+import json
 import os
 import random
 from pathlib import Path
@@ -71,7 +72,7 @@ class AverageMeter:
 
 
 class EarlyStopping:
-    """Early stopping to stop training when monitored metric stops improving."""
+    """Return True after the monitored metric fails to improve for patience epochs."""
 
     def __init__(self, patience: int = 4, mode: str = "max", min_delta: float = 1e-4):
         self.patience = patience
@@ -90,12 +91,11 @@ class EarlyStopping:
         if improved:
             self.best_score = current_score
             self.counter = 0
-            return True
         else:
             self.counter += 1
             if self.counter >= self.patience:
                 self.early_stop = True
-            return False
+        return self.early_stop
 
 
 def save_checkpoint(
@@ -106,6 +106,9 @@ def save_checkpoint(
     ckpt_path = Path(checkpoint_dir)
     ckpt_path.mkdir(parents=True, exist_ok=True)
     target_file = ckpt_path / filename
+    state = dict(state)
+    if "config" in state:
+        state["config"] = json.loads(json.dumps(state["config"]))
     torch.save(state, target_file)
     logging.info(f"Saved checkpoint to {target_file}")
 
@@ -120,7 +123,7 @@ def load_checkpoint(
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint file does not exist: {path}")
 
-    checkpoint = torch.load(path, map_location=device)
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
     if "model_state_dict" in checkpoint:
         model.load_state_dict(checkpoint["model_state_dict"])
     elif "state_dict" in checkpoint:

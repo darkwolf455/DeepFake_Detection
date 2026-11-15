@@ -62,11 +62,21 @@ def main():
     parser.add_argument("--output-dir", type=str, default="data/processed/audio", help="Output directory")
     parser.add_argument("--sample-rate", type=int, default=16000, help="Target sample rate")
     parser.add_argument("--duration", type=float, default=4.0, help="Duration in seconds")
+    parser.add_argument("--protocol-file", required=True, help="Official ASVspoof LA five-column protocol")
+    parser.add_argument("--max-per-class", type=int, default=500, help="Balanced subset size per class; 0 keeps all")
     args = parser.parse_args()
 
     input_path = Path(args.input_dir)
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+    protocol = pd.read_csv(args.protocol_file, sep=r"\s+", header=None, dtype=str,
+                           names=["speaker_id", "audio_id", "unused", "system_id", "key"])
+    if protocol.audio_id.duplicated().any() or not set(protocol.key).issubset({"bonafide", "spoof"}):
+        raise ValueError("Invalid or duplicate entries in the ASVspoof protocol")
+    if args.max_per_class > 0:
+        protocol = pd.concat([group.sample(min(len(group), args.max_per_class), random_state=42)
+                              for _, group in protocol.groupby("key")])
+    labels = protocol.set_index("audio_id")
 
     audio_extensions = {".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aac"}
     audio_files = [p for p in input_path.rglob("*") if p.suffix.lower() in audio_extensions]
@@ -74,18 +84,17 @@ def main():
 
     records = []
     for f in tqdm(audio_files):
+        if f.stem not in labels.index:
+            continue
         rec = process_audio_file(f, output_path, args.sample_rate, args.duration)
         if rec is not None:
-            # Determine label and speaker from path or filename
-            parts = [p.lower() for p in f.parts]
-            is_spoof = any(k in parts or k in f.stem.lower() for k in ["spoof", "fake", "cloned", "tts", "vc"])
-            rec["label"] = 1 if is_spoof else 0
-            
-            # Speaker ID parsing (e.g. ASVspoof speaker ID is typically first token)
-            tokens = f.stem.split("_")
-            rec["speaker_id"] = tokens[0] if len(tokens) > 1 else "spk_unknown"
+            rec["label"] = int(labels.loc[f.stem, "key"] == "spoof")
+            rec["speaker_id"] = labels.loc[f.stem, "speaker_id"]
+            rec["system_id"] = labels.loc[f.stem, "system_id"]
             records.append(rec)
 
+    if not records:
+        raise ValueError("No usable audio files matched the supplied protocol")
     df = pd.DataFrame(records)
     manifest_file = output_path / "audio_manifest.csv"
     df.to_csv(manifest_file, index=False)

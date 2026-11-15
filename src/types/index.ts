@@ -1,9 +1,17 @@
 import { z } from 'zod';
 
+// FastAPI serializes absent optional fields as null; the UI uses undefined.
+const optionalField = <T extends z.ZodType>(schema: T) =>
+  schema.nullish().transform((value) => value ?? undefined);
+
 export const ModalitySchema = z.enum(['image', 'video', 'audio']);
 export type Modality = z.infer<typeof ModalitySchema>;
 
-export const VerdictSchema = z.enum(['authentic', 'manipulated', 'inconclusive']);
+export const VerdictSchema = z.enum([
+  'authentic',
+  'manipulated',
+  'inconclusive',
+]);
 export type Verdict = z.infer<typeof VerdictSchema>;
 
 export const TimelinePointSchema = z.object({
@@ -21,10 +29,11 @@ export const ModelVersionSchema = z.object({
 export type ModelVersion = z.infer<typeof ModelVersionSchema>;
 
 export const ModalityScoresSchema = z.object({
-  image: z.number().min(0).max(1).optional(),
-  video: z.number().min(0).max(1).optional(),
-  audio: z.number().min(0).max(1).optional(),
-  av_sync: z.number().min(0).max(1).optional(),
+  image: optionalField(z.number().min(0).max(1)),
+  video: optionalField(z.number().min(0).max(1)),
+  audio: optionalField(z.number().min(0).max(1)),
+  av_sync: optionalField(z.number().min(0).max(1)),
+  fusion: optionalField(z.number().min(0).max(1)),
 });
 export type ModalityScores = z.infer<typeof ModalityScoresSchema>;
 
@@ -34,30 +43,42 @@ export const AnalyzeResponseSchema = z.object({
   verdict: VerdictSchema,
   confidence: z.number().min(0).max(1),
   scores: ModalityScoresSchema,
-  timeline: z.array(TimelinePointSchema).optional(),
-  heatmap_url: z.string().optional(),
+  timeline: optionalField(z.array(TimelinePointSchema)),
+  heatmap_url: optionalField(z.string()),
   models: z.array(ModelVersionSchema),
   processing_ms: z.number(),
-  warnings: z.array(z.string()).optional(),
-  file_sha256: z.string().optional(),
+  warnings: optionalField(z.array(z.string())),
+  file_sha256: optionalField(z.string()),
 });
 export type AnalyzeResponse = z.infer<typeof AnalyzeResponseSchema>;
 
-export interface HistoryItem {
-  id: string;
-  filename: string;
-  modality: Modality;
-  verdict: Verdict;
-  confidence: number;
-  timestamp: string;
-  scores: ModalityScores;
-  file_sha256?: string;
-}
+export const HealthResponseSchema = z.object({
+  status: z.string(),
+  device: z.string(),
+  active_branches: z.array(z.string()),
+  version: z.string(),
+});
 
-export interface AppSettings {
-  apiBaseUrl: string;
-  theme: 'dark' | 'light';
-  inconclusiveLower: number;
-  inconclusiveUpper: number;
-  enableHeatmapOverlay: boolean;
-}
+export const ModelsResponseSchema = z.object({
+  device: z.string(),
+  models: z.array(
+    z.object({
+      name: z.string(),
+      type: z.string(),
+      status: z.enum(['active', 'unavailable']),
+      decision_threshold: optionalField(z.number().min(0).max(1)),
+    }),
+  ),
+});
+
+export const HistoryItemSchema = z.object({
+  id: z.string(),
+  filename: z.string(),
+  modality: ModalitySchema,
+  verdict: VerdictSchema,
+  confidence: z.number().min(0).max(1),
+  timestamp: z.string(),
+  scores: ModalityScoresSchema,
+  file_sha256: optionalField(z.string()),
+});
+export type HistoryItem = z.infer<typeof HistoryItemSchema>;

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { HistoryItem } from '../types';
+import { HistoryItem, HistoryItemSchema } from '../types';
 
 interface HistoryContextType {
   history: HistoryItem[];
@@ -12,11 +12,20 @@ const HistoryContext = createContext<HistoryContextType | undefined>(undefined);
 
 const STORAGE_KEY = 'verisense_history_records';
 
-export const HistoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const HistoryProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
   const [history, setHistory] = useState<HistoryItem[]>(() => {
     try {
       const data = localStorage.getItem(STORAGE_KEY);
-      return data ? JSON.parse(data) : [];
+      const records = data ? JSON.parse(data) : [];
+      if (!Array.isArray(records)) return [];
+      return records
+        .flatMap((record) => {
+          const parsed = HistoryItemSchema.safeParse(record);
+          return parsed.success ? [parsed.data] : [];
+        })
+        .slice(0, 50);
     } catch {
       return [];
     }
@@ -31,7 +40,9 @@ export const HistoryProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [history]);
 
   const addHistoryItem = (item: HistoryItem) => {
-    setHistory((prev) => [item, ...prev.filter((i) => i.id !== item.id)].slice(0, 50));
+    setHistory((prev) =>
+      [item, ...prev.filter((i) => i.id !== item.id)].slice(0, 50),
+    );
   };
 
   const deleteHistoryItem = (id: string) => {
@@ -43,7 +54,9 @@ export const HistoryProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   return (
-    <HistoryContext.Provider value={{ history, addHistoryItem, deleteHistoryItem, clearHistory }}>
+    <HistoryContext.Provider
+      value={{ history, addHistoryItem, deleteHistoryItem, clearHistory }}
+    >
       {children}
     </HistoryContext.Provider>
   );
@@ -51,6 +64,7 @@ export const HistoryProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
 export const useHistory = () => {
   const context = useContext(HistoryContext);
-  if (!context) throw new Error('useHistory must be used within a HistoryProvider');
+  if (!context)
+    throw new Error('useHistory must be used within a HistoryProvider');
   return context;
 };

@@ -1,148 +1,86 @@
-import React from 'react';
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceLine,
-} from 'recharts';
+import { Activity } from 'lucide-react';
 import { TimelinePoint } from '../types';
 
-interface TimelineChartProps {
-  timeline: TimelinePoint[];
-  onSeek?: (timestamp: number) => void;
-  currentTimestamp?: number;
-}
-
-export const TimelineChart: React.FC<TimelineChartProps> = ({
-  timeline,
-  onSeek,
-  currentTimestamp,
-}) => {
-  if (!timeline || timeline.length === 0) {
-    return (
-      <div className="p-8 text-center text-slate-500 font-mono text-xs">
-        No temporal timeline available for this modality.
-      </div>
-    );
-  }
-
-  const chartData = timeline.map((pt) => ({
-    time: pt.t,
-    fakeProb: Math.round(pt.fake_prob * 100),
-    timeLabel: `${pt.t}s`,
-  }));
-
-  const handleClick = (e: any) => {
-    if (e && e.activePayload && e.activePayload.length > 0 && onSeek) {
-      const clickedTime = e.activePayload[0].payload.time;
-      onSeek(clickedTime);
-    }
-  };
-
+export function TimelineChart({ timeline }: { timeline: TimelinePoint[] }) {
+  if (!timeline.length) return null;
+  const maxTime = Math.max(1, ...timeline.map((point) => point.t));
+  const x = (time: number) => 40 + (time / maxTime) * 720;
+  const y = (score: number) => 130 - score * 100;
+  const points = timeline
+    .map((point) => `${x(point.t)},${y(point.fake_prob)}`)
+    .join(' ');
   return (
-    <div className="w-full bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
+    <section className="panel">
+      <div className="panel-heading">
         <div>
-          <h3 className="text-sm font-semibold text-slate-200">
-            Temporal Artifact Timeline
-          </h3>
-          <p className="text-xs text-slate-400">
-            Per-second manipulated probability. Click any point to seek media player.
+          <h2 className="section-title">
+            <Activity /> Sampled-frame scores
+          </h2>
+          <p>
+            Weak video-level supervision; this is not an edit-localization
+            timeline.
           </p>
         </div>
-        <div className="flex items-center gap-3 text-[11px] font-mono">
-          <span className="flex items-center gap-1.5 text-emerald-400">
-            <span className="w-2 h-2 rounded-full bg-emerald-400" />
-            &lt;40% Authentic
-          </span>
-          <span className="flex items-center gap-1.5 text-amber-400">
-            <span className="w-2 h-2 rounded-full bg-amber-400" />
-            40-65% Uncertain
-          </span>
-          <span className="flex items-center gap-1.5 text-rose-400">
-            <span className="w-2 h-2 rounded-full bg-rose-400" />
-            &gt;65% Deepfake
-          </span>
-        </div>
       </div>
-
-      <div className="h-56 w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart
-            data={chartData}
-            onClick={handleClick}
-            margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+      <svg
+        viewBox="0 0 800 170"
+        role="img"
+        aria-label={`${timeline.length} sampled frame scores, first ${maxTime.toFixed(1)} seconds`}
+        style={{ width: '100%', maxHeight: 230 }}
+      >
+        {[0, 0.5, 1].map((value) => (
+          <g key={value}>
+            <line
+              x1="40"
+              x2="760"
+              y1={y(value)}
+              y2={y(value)}
+              stroke="var(--border-strong)"
+              strokeDasharray="3 5"
+            />
+            <text
+              x="28"
+              y={y(value) + 4}
+              fill="var(--muted)"
+              fontSize="10"
+              textAnchor="end"
+            >
+              {value * 100}%
+            </text>
+          </g>
+        ))}
+        <polyline
+          points={points}
+          fill="none"
+          stroke="var(--accent)"
+          strokeWidth="2"
+        />
+        {timeline.map((point, index) => (
+          <circle
+            key={index}
+            cx={x(point.t)}
+            cy={y(point.fake_prob)}
+            r="3.5"
+            fill="var(--accent)"
           >
-            <defs>
-              <linearGradient id="probGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#8B5CF6" stopOpacity={0.6} />
-                <stop offset="60%" stopColor="#06B6D4" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#06B6D4" stopOpacity={0.0} />
-              </linearGradient>
-            </defs>
-
-            <XAxis
-              dataKey="timeLabel"
-              stroke="#64748b"
-              fontSize={11}
-              tickLine={false}
-              axisLine={{ stroke: '#334155' }}
-            />
-            <YAxis
-              domain={[0, 100]}
-              stroke="#64748b"
-              fontSize={11}
-              tickLine={false}
-              axisLine={{ stroke: '#334155' }}
-              tickFormatter={(v) => `${v}%`}
-            />
-
-            <Tooltip
-              content={({ active, payload }) => {
-                if (active && payload && payload.length) {
-                  const data = payload[0].payload;
-                  return (
-                    <div className="bg-slate-900 border border-slate-700 p-2.5 rounded-xl shadow-xl text-xs font-mono">
-                      <div className="text-slate-400">Timestamp: {data.time}s</div>
-                      <div className="text-cyan-400 font-bold mt-1">
-                        Manipulated Risk: {data.fakeProb}%
-                      </div>
-                      <div className="text-[10px] text-slate-500 mt-1">Click to seek</div>
-                    </div>
-                  );
-                }
-                return null;
-              }}
-            />
-
-            {/* Threshold lines */}
-            <ReferenceLine y={65} stroke="#ef4444" strokeDasharray="3 3" opacity={0.5} />
-            <ReferenceLine y={40} stroke="#f59e0b" strokeDasharray="3 3" opacity={0.5} />
-
-            {/* Active seek cursor */}
-            {currentTimestamp !== undefined && (
-              <ReferenceLine
-                x={`${Math.round(currentTimestamp)}s`}
-                stroke="#22d3ee"
-                strokeWidth={2}
-              />
-            )}
-
-            <Area
-              type="monotone"
-              dataKey="fakeProb"
-              stroke="#8B5CF6"
-              strokeWidth={2.5}
-              fillOpacity={1}
-              fill="url(#probGradient)"
-              activeDot={{ r: 6, fill: '#06B6D4', stroke: '#fff', strokeWidth: 2 }}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
+            <title>
+              {point.t.toFixed(2)}s: {(point.fake_prob * 100).toFixed(1)}%
+            </title>
+          </circle>
+        ))}
+        <text x="40" y="158" fill="var(--muted)" fontSize="10">
+          0s
+        </text>
+        <text
+          x="760"
+          y="158"
+          fill="var(--muted)"
+          fontSize="10"
+          textAnchor="end"
+        >
+          {maxTime.toFixed(1)}s
+        </text>
+      </svg>
+    </section>
   );
-};
+}

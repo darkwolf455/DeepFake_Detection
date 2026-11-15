@@ -1,9 +1,9 @@
 # Audio Branch Configuration: Pretrained Wav2Vec2 / WavLM + Attentive Pooling
 model:
-  backbone_name: "facebook/wav2vec2-xls-r-300m"  # or "microsoft/wavlm-large"
+  backbone_name: "facebook/wav2vec2-base"         # Smaller frozen backbone for the Colab demo
   sample_rate: 16000
   freeze_feature_extractor: true
-  unfreeze_last_n_layers: 2                      # Fine-tune only top 2 transformer layers
+  unfreeze_last_n_layers: 0                      # Freeze backbone; train pooling and classifier
   aggregate_hidden_states: true                 # Learnable weighted sum of all layer outputs
   classifier_type: "attentive_pooling"          # "attentive_pooling" or "aasist"
   hidden_dim: 256
@@ -29,17 +29,18 @@ data:
   val_split_csv: "data/splits/audio_val.csv"
   test_split_csv: "data/splits/audio_test.csv"
   num_workers: 2
-  batch_size: 16                                # 16 waveforms of 4s fits in 8GB VRAM
-  val_batch_size: 32
+  batch_size: 4
+  val_batch_size: 8
 
 training:
   seed: 42
-  epochs: 18
+  epochs: 5
   lr: 0.00005
   weight_decay: 0.001
   loss_type: "focal"                            # "focal" or "cross_entropy"
   focal_gamma: 2.0
   use_amp: true
+  gradient_accumulation_steps: 2
   early_stopping_patience: 4
   monitor_metric: "val_eer"                     # Equal Error Rate (lower is better)
   mode: "min"

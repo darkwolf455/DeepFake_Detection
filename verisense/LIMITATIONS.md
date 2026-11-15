@@ -1,27 +1,51 @@
-# VeriSense: System Limitations, Robustness Boundaries & Ethical Use
+# VeriSense student baseline: measured scope and limitations
 
-## 1. Probabilistic Nature of Deepfake Detection
-Detection models output calibrated likelihoods rather than absolute mathematical proofs. VeriSense analyzes artifacts in spatial frequency distributions, temporal sequence continuity, voice acoustic timbre, and lip-audio synchronization. No automated classifier is 100% accurate.
+## Held-out results
 
-## 2. Key Technical Limitations & Robustness Boundaries
+| Branch | Test subset | Accuracy | AUC | Errors |
+| --- | --- | --- | --- | --- |
+| Image | 200 face crops, FaceForensics++ Deepfakes | 90% | 0.9714 | 12 false positives, 8 misses |
+| Video | 32 videos, FaceForensics++ Deepfakes | 84.38% | 0.9688 | 1 false positive, 4 misses |
+| Audio | 200 clips, ASVspoof 2019 LA | 97% | 0.9986 | 1 false positive, 5 misses |
+| Experimental fusion | 92 scored / 100 LAV-DF clips | 78.26% | 0.9074 | 3 false positives, 17 misses; 8 rejected |
 
-### A. Generalization to Unseen Generators
-- Models trained on specific diffusion models (e.g. Stable Diffusion 1.5/2.1, Midjourney v4) may experience performance drops when exposed to newer latent diffusion architectures, flux models, or proprietary autoencoders.
-- Deepfake video models trained on FaceForensics++ (autoencoder-based face swaps) can have lower sensitivity against photorealistic 3D Gaussian Splatting or neural radiance fields (NeRFs) without retraining.
+These small benchmark subsets do not measure reliability on arbitrary uploads.
+Image crops from one video are correlated; 200 crops are not 200 independent
+people or videos. The video and audio cutoffs were selected on validation data,
+then fixed for test evaluation. Their scores are not calibrated probabilities.
+Fusion balanced accuracy was 81.16%, with a 75% majority-class accuracy baseline.
+Video-only manipulation accuracy was 43.48%, versus 91.30% each for audio-only
+and combined edits. The test cohort was already inspected for the initial fusion
+baseline. Related variants are correlated; source families are separated across
+partitions, while speaker/identity separation is unverified. Rejections are
+abstentions, not correct predictions.
 
-### B. Severe Social Media Compression & Re-encoding
-- Platforms like WhatsApp, Twitter/X, and Instagram heavily downscale, blur, and apply lossy JPEG/H.264 compression with high CRF values.
-- Lossy compression frequently destroys subtle high-frequency artifacts in facial textures and audio harmonics.
-- Although VeriSense incorporates compression augmentations (random JPEG quality 30-100, blur, downsampling, codec simulation), heavily degraded media is flagged as `inconclusive`.
+## What the demo analyzes
 
-### C. Physical Audio Reverberation & Background Noise
-- Audio branches trained on clean speech may suffer elevated false-positive rates when encountering heavy background music, cafeteria chatter, or acoustic room reflections.
-- RawBoost and room impulse response simulations are integrated, but noisy audio should be interpreted cautiously.
+- Images: exactly one detected face. The model was trained on face manipulation,
+  not a broad collection of modern fully generated images. It has incorrectly
+  accepted an AI portrait during manual testing.
+- Visual-only videos: up to 16 samples within the first 30 seconds, using frames with one
+  detected face. The soundtrack and lip-sync are not analyzed. Frame scores
+  have weak video-level supervision, not annotated manipulation timestamps.
+- Combined video/audio: requires at least four usable face samples and audible
+  speech in a clip up to 30 seconds. Uses the evaluated LAV-DF visual/audio heads,
+  original temporal model, and four-second audio windows with two-second hop.
+  Fusion combines five real scores; displayed image/audio scores are maxima.
+  No verdict is returned for unusable required modalities. Visual-only analysis
+  remains an explicit alternative. There is no lip-sync model or fusion timeline.
+- Audio: the central four seconds of a mono/stereo clip up to 30 seconds long.
+  Short clips repeat to four seconds. Other portions of the recording are not
+  checked. The training set does not establish performance on modern voice tools,
+  other languages, music, noisy recordings or replayed speech.
 
-### D. Adversarial Perturbations & Anti-Forensics
-- Malicious actors can apply adversarial noise, patch attacks, or post-processing filters (e.g., subtle Gaussian grain, color grade shifts) designed to trick CLIP or Wav2Vec2 embeddings.
+Lip-sync analysis and image heatmaps remain unavailable. Compression,
+noise or an unseen generator can cause either a false verdict or an inconclusive
+image result; the app has no validated automatic degradation detector.
 
-## 3. Ethical Guidance & Responsible Deployment
-1. **Never Sole Evidence**: VeriSense verdicts should NEVER be used as the sole grounds for legal prosecution, employment termination, defamation allegations, or journalistic attribution without corroborating human forensic review.
-2. **Mitigating False Accusations**: In legal and human rights contexts, a false positive (flagging authentic media as fake) can cause irreparable personal harm. The `inconclusive` confidence band is deliberately calibrated to mitigate overconfident false verdicts.
-3. **Data Privacy**: The backend architecture is designed with immediate temporary file cleanup (`finally` block unlinks). Do not store or redistribute uploaded media without consent.
+## Interpretation and storage
+
+Present results as model decisions for human review, with known errors and the
+evaluation dataset stated. A verdict does not prove authenticity or fabrication.
+Uploaded files use temporary storage with automatic cleanup after processing.
+The frontend history retains result metadata and is not a media archive.

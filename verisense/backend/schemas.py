@@ -36,13 +36,14 @@ class ModalityScores(BaseModel):
     video: Optional[float] = Field(None, ge=0.0, le=1.0)
     audio: Optional[float] = Field(None, ge=0.0, le=1.0)
     av_sync: Optional[float] = Field(None, ge=0.0, le=1.0)
+    fusion: Optional[float] = Field(None, ge=0.0, le=1.0)
 
 
 class AnalyzeResponse(BaseModel):
     id: str = Field(..., description="Unique analysis identifier")
     modality: ModalityEnum
     verdict: VerdictEnum
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Calibrated decision confidence")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Uncalibrated decision score; zero for inconclusive")
     scores: ModalityScores
     timeline: Optional[List[TimelinePoint]] = None
     heatmap_url: Optional[str] = None

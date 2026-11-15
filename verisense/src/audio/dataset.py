@@ -12,6 +12,7 @@ from scipy import signal
 import soundfile as sf
 import torch
 from torch.utils.data import Dataset
+from .preprocessing import prepare_audio
 
 
 def apply_rawboost_perturbation(waveform: np.ndarray, sr: int = 16000) -> np.ndarray:
@@ -76,35 +77,13 @@ class AudioDeepfakeDataset(Dataset):
 
         try:
             waveform, sr = sf.read(file_path, dtype="float32")
-            if len(waveform.shape) > 1:
-                waveform = np.mean(waveform, axis=1)  # Convert stereo to mono
-        except Exception:
-            waveform = np.zeros(self.target_samples, dtype=np.float32)
-            sr = self.target_sr
-
-        # Crop or pad to target length
-        total_len = len(waveform)
-        if total_len > self.target_samples:
-            if self.is_training:
-                # Random 4s crop during training
-                start = random.randint(0, total_len - self.target_samples)
-                waveform = waveform[start : start + self.target_samples]
-            else:
-                # Center crop during evaluation
-                start = (total_len - self.target_samples) // 2
-                waveform = waveform[start : start + self.target_samples]
-        elif total_len < self.target_samples:
-            pad_len = self.target_samples - total_len
-            waveform = np.pad(waveform, (0, pad_len), mode="wrap")
-
-        # Audio augmentations during training
-        if self.is_training and self.use_augmentation and random.random() < 0.6:
-            waveform = apply_rawboost_perturbation(waveform, sr=self.target_sr)
-
-        # RMS Normalization
-        rms = np.sqrt(np.mean(waveform**2))
-        if rms > 1e-6:
-            waveform = waveform * (0.1 / rms)
+        except Exception as exc:
+            raise ValueError(f"Cannot decode audio: {file_path}") from exc
+        waveform = prepare_audio(
+            waveform, sr, self.target_sr, self.target_samples / self.target_sr,
+            training=self.is_training,
+            augment=apply_rawboost_perturbation if self.use_augmentation else None,
+        )
 
         return {
             "waveform": torch.tensor(waveform, dtype=torch.float32),

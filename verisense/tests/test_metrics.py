@@ -42,10 +42,13 @@ def test_min_dcf_bounds():
 
 
 def test_ece_calibration():
-    # Perfectly calibrated predictions: prob matches actual label proportion
-    y_true = np.array([0, 0, 1, 1])
-    y_prob = np.array([0.25, 0.25, 0.75, 0.75])
+    # Within each bin, the positive-label fraction matches the predicted score.
+    y_true = np.array([0, 0, 0, 1, 0, 1, 1, 1])
+    y_prob = np.array([0.25] * 4 + [0.75] * 4)
 
     ece, details = compute_ece(y_true, y_prob, n_bins=4)
-    assert ece < 0.20
+    assert ece == pytest.approx(0.0)
     assert len(details["bin_confidences"]) == 4
+    # Perfect ranking alone does not establish calibration: both bins differ by .25.
+    ece, _ = compute_ece(np.array([0, 0, 1, 1]), np.array([.25, .25, .75, .75]), n_bins=4)
+    assert ece == pytest.approx(0.25)

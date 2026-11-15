@@ -4,6 +4,7 @@ Computes video-level AUC, accuracy, per-second prediction profiles, and cross-da
 """
 
 import argparse
+import json
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -26,16 +27,7 @@ def evaluate_video_model(config_path: str, checkpoint_path: str):
     device = get_device()
     print(f"[VeriSense Video Eval] Evaluating {checkpoint_path} on {device}")
 
-    model = VideoTemporalDetector(
-        input_dim=config.temporal_model.input_dim,
-        d_model=config.temporal_model.d_model,
-        nhead=config.temporal_model.nhead,
-        num_layers=config.temporal_model.num_layers,
-        dim_feedforward=config.temporal_model.dim_feedforward,
-        dropout=0.0,
-        model_type=config.temporal_model.type,
-        max_frames=config.temporal_model.max_frames,
-    ).to(device)
+    model = VideoTemporalDetector.from_config(config.temporal_model).to(device)
 
     load_checkpoint(checkpoint_path, model, device=device)
     model.eval()
@@ -62,6 +54,10 @@ def evaluate_video_model(config_path: str, checkpoint_path: str):
         video_ids.extend(batch["video_id"])
 
     metrics = compute_binary_metrics(np.array(all_labels), np.array(all_preds))
+    output = Path(checkpoint_path).parent
+    (output / "video_test_metrics.json").write_text(json.dumps(metrics, indent=2))
+    pd.DataFrame({"video_id": video_ids, "label": all_labels, "manipulation_score": all_preds}).to_csv(
+        output / "video_test_predictions.csv", index=False)
 
     print("\n" + "=" * 50)
     print("VIDEO BRANCH TEST METRICS")

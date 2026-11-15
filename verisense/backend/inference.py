@@ -1,299 +1,294 @@
-"""
-Inference Engine: Orchestrates multimodal models with concurrency semaphore,
-device placement, graceful checkpoint fallbacks, and Grad-CAM explainability.
-"""
+"""Trained face-image, temporal video and short speech inference."""
 
 import asyncio
-from pathlib import Path
+import logging
+import subprocess
 import time
-from typing import Dict, List, Optional, Tuple
 import uuid
-import cv2
-import librosa
-import numpy as np
-from PIL import Image
-import torch
+from pathlib import Path
 
-import sys
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-from backend.schemas import (
-    AnalyzeResponse,
-    ModalityEnum,
-    ModalityScores,
-    ModelVersion,
-    TimelinePoint,
-    VerdictEnum,
-)
+import numpy as np
+import torch
+from fastapi import HTTPException
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+from backend.schemas import AnalyzeResponse, ModalityScores, ModelVersion, VerdictEnum
 from backend.settings import settings
-from src.audio.model import Wav2Vec2DeepfakeDetector
-from src.common.utils import get_device, load_checkpoint
-from src.explain.gradcam import ViTGradCAM, generate_heatmap_overlay
-from src.fusion.lipsync import LipSyncScorer
-from src.fusion.train_fusion import CalibratedLateFusion
+from backend.fusion import load_fusion
 from src.image.model import CLIPDeepfakeDetector
-from src.video.face_extractor import FaceExtractor
+from src.audio.model import Wav2Vec2DeepfakeDetector
+from src.audio.preprocessing import prepare_audio
+from src.video.face_extractor import FaceExtractor, sample_video_frames
 from src.video.model import VideoTemporalDetector
 
 
 class InferenceManager:
     def __init__(self):
-        self.device = get_device()
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.semaphore = asyncio.Semaphore(settings.max_concurrent_inferences)
-        self.active_branches: List[str] = []
-        self.missing_checkpoints: List[str] = []
+        self.face_extractor = FaceExtractor()
+        self.image_model = None
+        self.video_model = None
+        self.video_threshold = None
+        self.audio_model = None
+        self.audio_threshold = None
+        self.fusion_model = None
+        self.fusion_scorer = None
+        self.active_branches = []
+        self.missing_checkpoints = ["image", "video", "audio", "fusion"]
         self.models_loaded = False
 
-        # Model containers
-        self.face_extractor = FaceExtractor()
-        self.image_model: Optional[CLIPDeepfakeDetector] = None
-        self.video_model: Optional[VideoTemporalDetector] = None
-        self.audio_model: Optional[Wav2Vec2DeepfakeDetector] = None
-        self.lipsync_scorer: Optional[LipSyncScorer] = None
-        self.fusion_engine: Optional[CalibratedLateFusion] = None
-        self.gradcam: Optional[ViTGradCAM] = None
-
-        settings.heatmaps_dir.mkdir(parents=True, exist_ok=True)
-
     def load_models(self):
-        print(f"[InferenceManager] Loading checkpoints on {self.device}...")
-
-        # 1. Image Model
+        self.image_model = None
+        self.video_model = None
+        self.video_threshold = None
+        self.audio_model = None
+        self.audio_threshold = None
+        self.fusion_model = None
+        self.fusion_scorer = None
+        self.active_branches = []
+        self.missing_checkpoints = ["image", "video", "audio", "fusion"]
         try:
-            self.image_model = CLIPDeepfakeDetector().to(self.device)
-            if settings.image_checkpoint.exists():
-                load_checkpoint(settings.image_checkpoint, self.image_model, device=self.device)
-                self.active_branches.append("image")
-            else:
-                self.missing_checkpoints.append("image")
-            self.image_model.eval()
-            self.gradcam = ViTGradCAM(self.image_model)
-        except Exception as e:
-            print(f"Error loading Image model: {e}")
-            self.missing_checkpoints.append("image")
-
-        # 2. Video Model
-        try:
-            self.video_model = VideoTemporalDetector(input_dim=768, d_model=512).to(self.device)
-            if settings.video_checkpoint.exists():
-                load_checkpoint(settings.video_checkpoint, self.video_model, device=self.device)
-                self.active_branches.append("video")
-            else:
-                self.missing_checkpoints.append("video")
-            self.video_model.eval()
-        except Exception as e:
-            print(f"Error loading Video model: {e}")
-            self.missing_checkpoints.append("video")
-
-        # 3. Audio Model
-        try:
-            self.audio_model = Wav2Vec2DeepfakeDetector().to(self.device)
-            if settings.audio_checkpoint.exists():
-                load_checkpoint(settings.audio_checkpoint, self.audio_model, device=self.device)
+            # Read metadata and trained head before downloading the frozen backbone.
+            checkpoint = torch.load(settings.image_checkpoint, map_location="cpu", weights_only=True)
+            if checkpoint["class_names"] != ["real", "manipulated"] or checkpoint["image_size"] != 224:
+                raise ValueError("Unsupported checkpoint labels or image size")
+            model = CLIPDeepfakeDetector(
+                model_name=checkpoint["model_name"],
+                head_type=checkpoint["head_type"],
+                hidden_dim=checkpoint["hidden_dim"],
+                dropout=checkpoint["dropout"],
+            )
+            model.head.load_state_dict(checkpoint["head_state_dict"], strict=True)
+            self.image_model = model.to(self.device).eval()
+            self.active_branches = ["image", "video"]
+            self.missing_checkpoints.remove("image")
+            self.missing_checkpoints.remove("video")
+        except Exception:
+            logging.exception("Image detector unavailable; check image_head.pt and the CLIP download")
+        if self.image_model is not None and settings.video_checkpoint.exists():
+            try:
+                checkpoint = torch.load(settings.video_checkpoint, map_location="cpu", weights_only=True)
+                config = checkpoint["config"]["temporal_model"]
+                if config["input_dim"] != 768:
+                    raise ValueError("Video model requires 768-dimensional CLIP features")
+                threshold = checkpoint.get("decision_threshold")
+                if threshold is not None and (
+                    type(threshold) not in (float, int) or not 0 < threshold < 1
+                    or checkpoint.get("threshold_source") != "validation"
+                ):
+                    raise ValueError("Video cutoff must be a finite value between 0 and 1 selected on validation")
+                model = VideoTemporalDetector.from_config(config)
+                model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+                self.video_model = model.to(self.device).eval()
+                self.video_threshold = threshold
+            except Exception:
+                logging.exception("Temporal checkpoint unavailable; retaining the labeled frame-mean baseline")
+        if settings.audio_checkpoint.exists():
+            try:
+                import soundfile
+                from scipy.signal import resample_poly
+                checkpoint = torch.load(settings.audio_checkpoint, map_location="cpu", weights_only=True)
+                model = Wav2Vec2DeepfakeDetector.from_checkpoint(checkpoint)
+                self.audio_model = model.to(self.device).eval()
+                self.audio_threshold = checkpoint["decision_threshold"]
                 self.active_branches.append("audio")
-            else:
-                self.missing_checkpoints.append("audio")
-            self.audio_model.eval()
-        except Exception as e:
-            print(f"Error loading Audio model: {e}")
-            self.missing_checkpoints.append("audio")
-
-        # 4. LipSync & Late Fusion
-        try:
-            self.lipsync_scorer = LipSyncScorer().to(self.device).eval()
-            self.fusion_engine = CalibratedLateFusion(
-                model_type="mlp",
-                inconclusive_range=(settings.inconclusive_lower, settings.inconclusive_upper),
-            )
-            if settings.fusion_checkpoint.exists():
-                ckpt = torch.load(settings.fusion_checkpoint, map_location=self.device)
-                self.fusion_engine.model.load_state_dict(ckpt["model_state_dict"])
-                self.fusion_engine.temperature = ckpt.get("temperature", 1.0)
+                self.missing_checkpoints.remove("audio")
+            except Exception:
+                logging.exception("Audio detector unavailable; check audio_head.pt and the audio dependencies")
+        if settings.fusion_checkpoint.exists() and all(model is not None for model in
+                (self.image_model, self.video_model, self.audio_model)):
+            try:
+                self.fusion_model, self.fusion_scorer = load_fusion(
+                    settings.fusion_checkpoint,
+                    {"image_head.pt": settings.image_checkpoint, "video_best.pt": settings.video_checkpoint,
+                     "audio_head.pt": settings.audio_checkpoint},
+                    self.image_model, self.video_model, self.audio_model, self.device, self.face_extractor)
                 self.active_branches.append("fusion")
-            else:
-                self.missing_checkpoints.append("fusion")
-        except Exception as e:
-            print(f"Error loading Fusion/SyncNet: {e}")
-
+                self.missing_checkpoints.remove("fusion")
+            except Exception:
+                logging.exception("Fusion unavailable; check checkpoints/lavdf, decoder and training provenance")
         self.models_loaded = True
-        print(f"[InferenceManager] Models loaded. Active branches: {self.active_branches}")
 
-    async def analyze_file(self, file_path: Path, modality: str, file_hash: str) -> AnalyzeResponse:
+    async def analyze_file(self, file_path: Path, modality: str, file_hash: str, use_fusion=False) -> AnalyzeResponse:
+        if use_fusion:
+            if modality != "video":
+                raise HTTPException(400, "Combined video/audio analysis requires a video upload.")
+            if getattr(self, "fusion_model", None) is None:
+                raise HTTPException(503, "Fusion unavailable. Check checkpoints/lavdf and the server startup log.")
+            async with self.semaphore:
+                return await asyncio.to_thread(self._analyze_fusion, file_path, file_hash)
+        if modality == "audio" and self.audio_model is None:
+            raise HTTPException(503, "Audio detector unavailable. Check audio_head.pt and the server startup log.")
+        if modality in ("image", "video") and self.image_model is None:
+            raise HTTPException(503, "Image detector unavailable. Check the server startup log and image_head.pt.")
+        routes = {"image": self._analyze_image, "video": self._analyze_video, "audio": self._analyze_audio}
+        if modality not in routes:
+            raise HTTPException(400, "Unsupported analysis modality.")
         async with self.semaphore:
-            start_time = time.time()
-            req_id = str(uuid.uuid4())[:8]
-            warnings: List[str] = []
+            return await asyncio.to_thread(routes[modality], file_path, file_hash)
 
-            if "image" in self.missing_checkpoints and modality == "image":
-                warnings.append("Image checkpoint is absent from disk. Running zero-shot forensic heuristics fallback.")
-            if "video" in self.missing_checkpoints and modality == "video":
-                warnings.append("Video checkpoint is absent from disk. Running heuristic temporal consistency.")
-            if "audio" in self.missing_checkpoints and modality == "audio":
-                warnings.append("Audio checkpoint is absent from disk. Running spectral entropy heuristic.")
+    def _analyze_image(self, file_path: Path, file_hash: str) -> AnalyzeResponse:
+        started = time.perf_counter()
+        try:
+            with Image.open(file_path) as image:
+                if image.width * image.height > 25_000_000:
+                    raise HTTPException(413, "Image exceeds the 25-megapixel decoding limit.")
+                rgb = np.array(ImageOps.exif_transpose(image).convert("RGB"))
+        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+            raise HTTPException(400, "The uploaded image could not be decoded.") from exc
 
-            scores = ModalityScores()
-            timeline: Optional[List[TimelinePoint]] = None
-            heatmap_url: Optional[str] = None
-            models_used: List[ModelVersion] = []
+        faces = self.face_extractor.extract_faces(rgb)
+        if len(faces) != 1:
+            raise HTTPException(422, f"Expected one detected face, found {len(faces)}. Upload a clear photo of one face.")
+        probability = self._score_face(faces[0]["cropped_face"])
+        return self._response(probability, "image", file_hash, started)
 
-            # ---------------- IMAGE ANALYSIS ----------------
-            if modality == "image":
-                img = cv2.imread(str(file_path))
-                if img is None:
-                    img = np.array(Image.open(str(file_path)).convert("RGB"))
-                else:
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    def _face_tensor(self, crop):
+        # Match the face crop, scaling and normalization used during training.
+        pixels = torch.from_numpy(crop).permute(2, 0, 1).float() / 255.0
+        mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(3, 1, 1)
+        std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(3, 1, 1)
+        return ((pixels - mean) / std).unsqueeze(0).to(self.device)
 
-                # Detect face or evaluate full image
-                faces = self.face_extractor.extract_faces(img)
-                primary_image = faces[0]["cropped_face"] if faces else cv2.resize(img, (224, 224))
+    def _score_face(self, crop):
+        with torch.inference_mode():
+            logits = self.image_model(self._face_tensor(crop))
+            probability = float(torch.softmax(logits, dim=-1)[0, 1].item())
+        if not np.isfinite(probability):
+            raise HTTPException(500, "Image detector returned an invalid score.")
+        return probability
 
-                # Normalize for CLIP
-                tensor = torch.from_numpy(primary_image).permute(2, 0, 1).float().unsqueeze(0).to(self.device) / 255.0
-                mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1).to(self.device)
-                std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1).to(self.device)
-                norm_tensor = (tensor - mean) / std
+    def _analyze_video(self, file_path: Path, file_hash: str) -> AnalyzeResponse:
+        started = time.perf_counter()
+        timeline = []
+        crops, timestamps = [], []
+        sampled = 0
+        temporal = getattr(self, "video_model", None)
+        try:
+            for rgb, timestamp in sample_video_frames(file_path, max_frames=temporal.max_frames if temporal else 16):
+                sampled += 1
+                faces = self.face_extractor.extract_faces(rgb)
+                if len(faces) == 1:
+                    crop = faces[0]["cropped_face"]
+                    crops.append(crop)
+                    timestamps.append(timestamp)
+                    if temporal is None:
+                        timeline.append({"t": timestamp, "fake_prob": self._score_face(crop)})
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if not crops:
+            raise HTTPException(422, "No sampled frames contained exactly one clear face.")
+        if temporal is not None:
+            with torch.inference_mode():
+                pixels = torch.cat([self._face_tensor(crop) for crop in crops])
+                features = self.image_model.extract_features(pixels).unsqueeze(0)
+                mask = torch.ones((1, len(crops)), dtype=torch.bool, device=self.device)
+                video_logits, frame_logits = temporal(features, mask=mask)
+                probability = float(video_logits.softmax(-1)[0, 1].item())
+                scores = frame_logits.softmax(-1)[0, :, 1].cpu().tolist()
+            if not np.isfinite([probability, *scores]).all():
+                raise HTTPException(500, "Temporal detector returned an invalid score.")
+            timeline = [{"t": t, "fake_prob": score} for t, score in zip(timestamps, scores)]
+            warnings = [f"Temporal model scored {len(crops)} of {sampled} decoded samples from the first 30 seconds at most.",
+                        "Frame scores use video-level training labels; audio and lip-sync are not analyzed."]
+            return self._response(probability, "video", file_hash, started, timeline, warnings,
+                                  decision_threshold=getattr(self, "video_threshold", None))
+        warnings = [
+            f"Video baseline: scored {len(timeline)} of {sampled} decoded sampled frames from the first 30 seconds at most.",
+            "Video score is the mean of sampled face scores; no temporal, audio or lip-sync model is used.",
+        ]
+        probability = float(np.mean([point["fake_prob"] for point in timeline]))
+        return self._response(probability, "video", file_hash, started, timeline, warnings)
 
-                if self.image_model is not None and "image" in self.active_branches:
-                    with torch.no_grad():
-                        logits = self.image_model(norm_tensor)
-                        prob = float(torch.softmax(logits, dim=-1)[0, 1].cpu().item())
-                else:
-                    # Forensic FFT high-frequency noise heuristic fallback
-                    gray = cv2.cvtColor(primary_image, cv2.COLOR_RGB2GRAY)
-                    f = np.fft.fft2(gray)
-                    fshift = np.fft.fftshift(f)
-                    magnitude = 20 * np.log(np.abs(fshift) + 1e-8)
-                    high_freq_mean = np.mean(magnitude[:30, :30])
-                    prob = float(np.clip((high_freq_mean - 80) / 40.0, 0.15, 0.85))
+    def _analyze_audio(self, file_path: Path, file_hash: str) -> AnalyzeResponse:
+        import soundfile as sf
 
-                scores.image = round(prob, 4)
+        started = time.perf_counter()
+        try:
+            with sf.SoundFile(file_path) as audio:
+                rate = audio.samplerate
+                if not 8000 <= rate <= 192000 or not 1 <= audio.channels <= 2:
+                    raise HTTPException(422, "Use mono or stereo audio sampled between 8 and 192 kHz.")
+                if audio.frames > rate * 30:
+                    raise HTTPException(413, "Audio demo accepts clips up to 30 seconds.")
+                waveform = audio.read(frames=rate * 30 + 1, dtype="float32", always_2d=True)
+                if len(waveform) > rate * 30:
+                    raise HTTPException(413, "Audio demo accepts clips up to 30 seconds.")
+            waveform = prepare_audio(waveform, rate)
+        except (RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(400, "Audio could not be decoded. Try a valid WAV or FLAC speech clip.") from exc
+        if np.max(np.abs(waveform)) <= 1e-6:
+            raise HTTPException(422, "The analyzed audio segment is silent. Upload a clear speech clip.")
+        with torch.inference_mode():
+            logits = self.audio_model(torch.from_numpy(waveform).unsqueeze(0).to(self.device))
+            probability = float(logits.softmax(-1)[0, 1].item())
+        if not np.isfinite(probability):
+            raise HTTPException(500, "Audio detector returned an invalid score.")
+        return self._response(probability, "audio", file_hash, started, warnings=[
+            "Audio model analyzes the central 4 seconds; longer recordings are not checked in full.",
+        ], decision_threshold=self.audio_threshold)
 
-                # Generate Grad-CAM heatmap
-                if self.gradcam is not None:
-                    cam_mask = self.gradcam.generate_cam(norm_tensor)
-                    overlay = generate_heatmap_overlay(cv2.resize(img, (512, 512)), cam_mask)
-                    heatmap_path = settings.heatmaps_dir / f"{req_id}.png"
-                    Image.fromarray(overlay).save(heatmap_path)
-                    heatmap_url = f"/heatmaps/{req_id}.png"
+    def _analyze_fusion(self, file_path: Path, file_hash: str) -> AnalyzeResponse:
+        started = time.perf_counter()
+        try:
+            values = self.fusion_scorer.score(file_path)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(422, "Combined analysis requires at least four clear single-face samples and a "
+                                "decodable, non-silent soundtrack up to 30 seconds. "
+                                "Try a clearer clip or turn off combined analysis for visual-only scoring.") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(504, "Video soundtrack decoding timed out.") from exc
+        from src.fusion.model import FEATURE_COLUMNS
+        with torch.inference_mode():
+            probability = float(self.fusion_model([values[name] for name in FEATURE_COLUMNS]).item())
+        scores = ModalityScores(image=round(values["image_max"], 4), video=round(values["video_score"], 4),
+                                audio=round(values["audio_max"], 4), fusion=round(probability, 4))
+        models = [ModelVersion(name=name, version="lavdf-run2" if kind != "video" else "student-v1", modality=kind)
+                  for name, kind in [("CLIP Face Classifier (LAV-DF)", "image"),
+                    ("CLIP Temporal Classifier", "video"), ("Wav2Vec2 Speech Classifier (LAV-DF)", "audio"),
+                    ("LAV-DF Five-Score Fusion", "fusion")]]
+        return self._response(probability, "video", file_hash, started, scores=scores, models=models,
+            decision_threshold=self.fusion_model.decision_threshold, warnings=[
+                f"Combined analysis scored {values['face_frames']} face frames and {values['scored_audio_windows']} "
+                "four-second speech windows; uploads must be at most 30 seconds.",
+                "Image/audio cards show maximum sampled scores. Fusion also uses their means and the temporal score.",
+                "Lip-sync is not analyzed. No fusion verdict is produced when a required modality cannot be scored."])
 
-                models_used.append(ModelVersion(name="CLIP ViT-L/14 Vision Head", version="1.0.0", modality="image"))
+    def _response(self, probability, modality, file_hash, started, timeline=None, warnings=None, decision_threshold=None,
+                  scores=None, models=None):
+        fused = scores is not None and scores.fusion is not None
+        if modality in ("video", "audio") and decision_threshold is not None:
+            verdict = VerdictEnum.MANIPULATED if probability >= decision_threshold else VerdictEnum.AUTHENTIC
+            confidence = probability if verdict == VerdictEnum.MANIPULATED else 1 - probability
+            warnings = (warnings or []) + [
+                f"{'Fusion' if fused else modality.title()} uses a validation-selected cutoff of {decision_threshold:.6f}; scores are uncalibrated."
+            ]
+        elif settings.inconclusive_lower <= probability <= settings.inconclusive_upper:
+            verdict = VerdictEnum.INCONCLUSIVE
+            confidence = 0.0  # No confident decision within the uncalibrated margin.
+        else:
+            verdict = VerdictEnum.MANIPULATED if probability > settings.inconclusive_upper else VerdictEnum.AUTHENTIC
+            confidence = max(probability, 1 - probability)
 
-            # ---------------- VIDEO ANALYSIS ----------------
-            elif modality == "video":
-                cap = cv2.VideoCapture(str(file_path))
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 100)
-                fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-                duration_sec = total_frames / fps
-
-                sampled_faces = []
-                frame_scores = []
-                sample_step = max(1, int(fps / 2))  # 2 samples per sec
-
-                frame_idx = 0
-                while cap.isOpened() and len(sampled_faces) < 32:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    if frame_idx % sample_step == 0:
-                        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        faces = self.face_extractor.extract_faces(rgb)
-                        if faces:
-                            sampled_faces.append(faces[0]["cropped_face"])
-                            # Synthetic/model frame score
-                            f_prob = 0.5 + 0.3 * np.sin(frame_idx * 0.1)
-                            frame_scores.append(float(np.clip(f_prob, 0.05, 0.95)))
-                        else:
-                            frame_scores.append(0.5)
-                    frame_idx += 1
-                cap.release()
-
-                if len(sampled_faces) == 0:
-                    warnings.append("No human faces detected in video clip. Analysis performed on global scene.")
-
-                vid_prob = float(np.mean(frame_scores)) if frame_scores else 0.5
-                scores.video = round(vid_prob, 4)
-
-                # Construct Timeline
-                timeline = [
-                    TimelinePoint(t=round(i * (sample_step / fps), 2), fake_prob=round(p, 4))
-                    for i, p in enumerate(frame_scores)
-                ]
-
-                # Check audio track for AV-Sync
-                try:
-                    waveform, sr = librosa.load(str(file_path), sr=16000, mono=True)
-                    if len(waveform) > sr * 1.0:
-                        scores.audio = 0.45
-                        if self.lipsync_scorer and sampled_faces:
-                            scores.av_sync = round(self.lipsync_scorer.compute_sync_score(sampled_faces, waveform), 4)
-                except Exception:
-                    pass
-
-                models_used.append(ModelVersion(name="Temporal Transformer Sequence Encoder", version="1.0.0", modality="video"))
-                models_used.append(ModelVersion(name="MediaPipe Face Extractor", version="0.10.11", modality="video"))
-
-            # ---------------- AUDIO ANALYSIS ----------------
-            elif modality == "audio":
-                waveform, sr = librosa.load(str(file_path), sr=16000, mono=True)
-                if len(waveform) == 0:
-                    waveform = np.zeros(16000 * 4, dtype=np.float32)
-
-                if self.audio_model is not None and "audio" in self.active_branches:
-                    timeline_raw = self.audio_model.compute_timeline(waveform, sr=16000, device=self.device)
-                    timeline = [TimelinePoint(t=item["t"], fake_prob=item["fake_prob"]) for item in timeline_raw]
-                    aud_prob = float(np.mean([item["fake_prob"] for item in timeline_raw]))
-                else:
-                    # Spectral flatness & zero-crossing rate heuristic fallback
-                    flatness = float(np.mean(librosa.feature.spectral_flatness(y=waveform)))
-                    aud_prob = float(np.clip(flatness * 15.0 + 0.25, 0.1, 0.9))
-                    # Generate timeline
-                    duration = len(waveform) / 16000
-                    timeline = [
-                        TimelinePoint(t=round(sec, 1), fake_prob=round(float(np.clip(aud_prob + 0.1 * np.cos(sec), 0.05, 0.95)), 4))
-                        for sec in np.arange(0, duration, 1.0)
-                    ]
-
-                scores.audio = round(aud_prob, 4)
-                models_used.append(ModelVersion(name="Wav2Vec2 XLS-R 300M Forensics", version="1.0.0", modality="audio"))
-
-            # ---------------- LATE FUSION & VERDICT ----------------
-            scores_dict = {
-                "image": scores.image,
-                "video": scores.video,
-                "audio": scores.audio,
-                "av_sync": scores.av_sync,
-            }
-
-            if self.fusion_engine is not None:
-                fusion_out = self.fusion_engine.predict(scores_dict)
-                verdict = VerdictEnum(fusion_out["verdict"])
-                confidence = fusion_out["confidence"]
-            else:
-                # Rule-based calibrated fallback
-                valid_scores = [v for v in scores_dict.values() if v is not None]
-                avg_score = float(np.mean(valid_scores)) if valid_scores else 0.5
-                if settings.inconclusive_lower <= avg_score <= settings.inconclusive_upper:
-                    verdict = VerdictEnum.INCONCLUSIVE
-                    confidence = round(1.0 - 2.0 * abs(avg_score - 0.5), 4)
-                elif avg_score > settings.inconclusive_upper:
-                    verdict = VerdictEnum.MANIPULATED
-                    confidence = round(avg_score, 4)
-                else:
-                    verdict = VerdictEnum.AUTHENTIC
-                    confidence = round(1.0 - avg_score, 4)
-
-            proc_ms = int((time.time() - start_time) * 1000)
-
-            return AnalyzeResponse(
-                id=req_id,
-                modality=ModalityEnum(modality),
-                verdict=verdict,
-                confidence=confidence,
-                scores=scores,
-                timeline=timeline,
-                heatmap_url=heatmap_url,
-                models=models_used,
-                processing_ms=proc_ms,
-                warnings=warnings if warnings else None,
-                file_sha256=file_hash,
-            )
+        return AnalyzeResponse(
+            id=uuid.uuid4().hex,
+            modality=modality,
+            verdict=verdict,
+            confidence=round(confidence, 4),
+            scores=scores if scores is not None else ModalityScores(**{modality: round(probability, 4)}),
+            timeline=timeline,
+            models=models if models is not None else [ModelVersion(
+                name="Wav2Vec2 Base Speech Classifier" if modality == "audio" else "CLIP Face Classifier" if modality == "image" else (
+                    "CLIP + Temporal Sequence Classifier" if getattr(self, "video_model", None) is not None else "CLIP Face Classifier + Frame Mean"),
+                version="student-v1", modality=modality)],
+            processing_ms=int((time.perf_counter() - started) * 1000),
+            file_sha256=file_hash,
+            warnings=(warnings or []) + [
+                ("Experimental fusion evaluated on a small LAV-DF subset; video-only manipulations were frequently missed."
+                 if fused else "Student model trained on a small ASVspoof 2019 LA subset; unfamiliar synthetic voices may be missed."
+                 if modality == "audio" else
+                 "Student model trained on a small FaceForensics++ Deepfakes subset; unfamiliar edits may be missed."),
+                "Scores and decision margins are not calibrated probabilities or proof of authenticity.",
+            ],
+        )

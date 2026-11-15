@@ -42,7 +42,7 @@ class AttentionPooling(nn.Module):
         scores = self.attn(x)  # (B, T, 1)
         if mask is not None:
             # Mask out padded positions
-            scores = scores.masked_fill(~mask.unsqueeze(-1), -1e9)
+            scores = scores.masked_fill(~mask.unsqueeze(-1), torch.finfo(scores.dtype).min)
         weights = torch.softmax(scores, dim=1)  # (B, T, 1)
         pooled = torch.sum(x * weights, dim=1)  # (B, D)
         return pooled
@@ -62,6 +62,7 @@ class VideoTemporalDetector(nn.Module):
     ):
         super().__init__()
         self.model_type = model_type
+        self.max_frames = max_frames
         self.input_proj = nn.Linear(input_dim, d_model)
 
         if model_type == "transformer":
@@ -101,6 +102,11 @@ class VideoTemporalDetector(nn.Module):
             nn.GELU(),
             nn.Linear(64, 2),
         )
+
+    @classmethod
+    def from_config(cls, config):
+        names = ("input_dim", "d_model", "nhead", "num_layers", "dim_feedforward", "dropout", "max_frames")
+        return cls(**{name: config[name] for name in names}, model_type=config["type"])
 
     def forward(
         self,

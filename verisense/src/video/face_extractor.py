@@ -8,6 +8,30 @@ import cv2
 import numpy as np
 
 
+def sample_video_frames(video_path, max_frames=16, max_seconds=30):
+    """Yield uniformly sampled RGB frames and timestamps; always close the decoder."""
+    capture = cv2.VideoCapture(str(video_path))
+    decoded = 0
+    try:
+        fps = capture.get(cv2.CAP_PROP_FPS)
+        total = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+        if not capture.isOpened() or not np.isfinite(fps) or fps <= 0 or not np.isfinite(total) or total < 1:
+            raise ValueError("Video could not be opened or has invalid frame metadata.")
+        if capture.get(cv2.CAP_PROP_FRAME_WIDTH) * capture.get(cv2.CAP_PROP_FRAME_HEIGHT) > 25_000_000:
+            raise ValueError("Video exceeds the 25-megapixel frame limit.")
+        last = min(int(total) - 1, max(0, int(fps * max_seconds) - 1))
+        for index in np.unique(np.linspace(0, last, max_frames, dtype=int)):
+            capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
+            ok, frame = capture.read()
+            if ok:
+                decoded += 1
+                yield cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), round(float(index) / fps, 3)
+        if not decoded:
+            raise ValueError("Video contains no readable sampled frames.")
+    finally:
+        capture.release()
+
+
 class FaceExtractor:
     def __init__(
         self,
@@ -75,8 +99,13 @@ class FaceExtractor:
         else:
             # Haar Cascade fallback
             gray = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2GRAY)
-            faces = self.haar_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
-            for (x, y, fw, fh) in faces:
+            faces, _, scores = self.haar_cascade.detectMultiScale3(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40), outputRejectLevels=True
+            )
+            for (x, y, fw, fh), score in zip(faces, scores):
+                # Raw Haar scores are not probabilities; discard weak detections.
+                if score < 3.0:
+                    continue
                 margin = int(fw * self.margin_ratio)
                 x1 = max(0, x - margin)
                 y1 = max(0, y - margin)

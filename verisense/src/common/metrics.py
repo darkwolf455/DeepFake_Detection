@@ -18,6 +18,19 @@ from sklearn.metrics import (
 )
 
 
+def select_balanced_threshold(labels, scores):
+    """Maximize validation balanced accuracy; ties prefer the cutoff nearest .5."""
+    labels, scores = np.asarray(labels), np.asarray(scores, dtype=float)
+    if (set(labels) != {0, 1} or not np.isfinite(scores).all()
+            or not ((scores >= 0) & (scores <= 1)).all()):
+        raise ValueError("Cutoff selection needs both classes and valid scores")
+    candidates = np.unique(np.r_[.5, scores[(scores > 0) & (scores < 1)]])
+    predictions = scores[:, None] >= candidates
+    balanced = (predictions[labels == 1].mean(0) + (~predictions[labels == 0]).mean(0)) / 2
+    tied = np.flatnonzero(np.isclose(balanced, balanced.max(), rtol=0, atol=1e-12))
+    return float(candidates[tied[np.argmin(abs(candidates[tied] - .5))]])
+
+
 def compute_binary_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.5) -> Dict[str, float]:
     """Computes standard binary classification metrics."""
     y_true = np.asarray(y_true, dtype=int)

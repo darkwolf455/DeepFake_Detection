@@ -151,12 +151,13 @@ def train_audio_model(config_path: str, debug: bool = False):
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda" and config.training.use_amp))
 
     early_stopping = EarlyStopping(patience=config.training.early_stopping_patience, mode="min")
-    best_eer = 1.0
+    best_eer = float("inf")
     ckpt_dir = Path(config.training.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, epochs + 1):
-        tr_loss = train_audio_epoch(model, train_loader, optimizer, criterion, scaler, device)
+        tr_loss = train_audio_epoch(model, train_loader, optimizer, criterion, scaler, device,
+                                   config.training.gradient_accumulation_steps)
         vl_loss, vl_metrics = evaluate_audio_epoch(model, val_loader, criterion, device)
         scheduler.step()
 

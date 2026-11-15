@@ -16,12 +16,12 @@ feature_extractor:
 temporal_model:
   type: "transformer"       # "transformer" or "bilstm"
   input_dim: 768
-  d_model: 512
-  nhead: 8
-  num_layers: 4
-  dim_feedforward: 1024
+  d_model: 128
+  nhead: 4
+  num_layers: 2
+  dim_feedforward: 256
   dropout: 0.2
-  max_frames: 32            # Number of frames sampled per video clip
+  max_frames: 16            # Uniform samples within the first 30 seconds
   pooling: "attention"      # "mean" or "attention"
 
 data:
@@ -34,13 +34,13 @@ data:
 
 training:
   seed: 42
-  epochs: 20
+  epochs: 10
   lr: 0.0002
   weight_decay: 0.005
   warmup_epochs: 2
   gradient_accumulation_steps: 1
   use_amp: true
-  early_stopping_patience: 5
+  early_stopping_patience: 3
   monitor_metric: "val_auc"
   mode: "max"
   checkpoint_dir: "checkpoints"
